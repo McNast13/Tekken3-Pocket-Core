@@ -110,7 +110,7 @@ jobs:
         shell: bash
         run: |
           pkg=${{ steps.pick.outputs.dir }}/package
-          python3 - "$pkg/Cores/McNast13.NamcoSystem11/core.json" "${TAG#v}" <<'EOF'
+          python3 - "$pkg/Cores/McNast13.Tekken3/core.json" "${TAG#v}" <<'EOF'
           import json, sys, datetime
           p, ver = sys.argv[1], sys.argv[2]
           j = json.load(open(p))
@@ -118,7 +118,7 @@ jobs:
           j["core"]["metadata"]["date_release"] = datetime.date.today().isoformat()
           json.dump(j, open(p, "w"), indent=2)
           EOF
-          zip_name="NamcoSystem11-pocket-core-${TAG}.zip"
+          zip_name="Tekken3-pocket-core-${TAG}.zip"
           (cd "$pkg" && zip -r "$GITHUB_WORKSPACE/$zip_name" Cores Platforms Assets LICENSE.txt)
           echo "zip=$zip_name" >> "$GITHUB_OUTPUT"
       - name: Release notes
@@ -126,11 +126,11 @@ jobs:
         run: |
           d=${{ steps.pick.outputs.dir }}
           {
-            echo "Beta of the Namco System 11 arcade core for the Analogue Pocket (port of SYSTEM11_MiSTer, built on the openFPGA PlayStation core)."
+            echo "Beta of the Tekken 3 arcade core (Namco System 12) for the Analogue Pocket, built on the Namco System 11 port and the openFPGA PlayStation core."
             echo
-            echo "**Install:** unzip onto the root of the SD card. The core appears under openFPGA > Arcade Multi > Namco System 11."
+            echo "**Install:** unzip onto the root of the SD card. The core appears under openFPGA > Arcade > Tekken 3."
             echo "ROMs and the C76 BIOS are not included: build the game files from your own current-MAME romsets with"
-            echo "tools/make_games.py, and put c76.bin (from namcoc76.zip) in Assets/namco_system11/common/ (see the README)."
+            echo "tools/make_games.py, and put c76.bin (from namcoc76.zip) in Assets/tekken3/common/ (see the README)."
             echo "pupdate and Pocket Sync list each game's required files."
             echo
             echo "**Tested on a Pocket:** Tekken, Tekken 2, Soul Edge, Xevious 3D/G, Dancing Eyes, Star Sweep, Pocket Racer, Prime Goal EX"
@@ -154,9 +154,9 @@ jobs:
           # leave it alone and check that this build reproduces its bitstream instead of failing on "release already exists".
           if gh release view "$TAG" >/dev/null 2>&1; then
             mkdir -p existing && gh release download "$TAG" -p '*.zip' -D existing
-            unzip -q -o existing/*.zip 'Cores/McNast13.NamcoSystem11/bitstream.rbf_r' -d existing/x
-            if cmp existing/x/Cores/McNast13.NamcoSystem11/bitstream.rbf_r \
-                   ${{ steps.pick.outputs.dir }}/package/Cores/McNast13.NamcoSystem11/bitstream.rbf_r; then
+            unzip -q -o existing/*.zip 'Cores/McNast13.Tekken3/bitstream.rbf_r' -d existing/x
+            if cmp existing/x/Cores/McNast13.Tekken3/bitstream.rbf_r \
+                   ${{ steps.pick.outputs.dir }}/package/Cores/McNast13.Tekken3/bitstream.rbf_r; then
               echo "::notice::release $TAG already exists; this build reproduces its bitstream byte for byte (left unchanged)"
               exit 0
             fi
@@ -166,4 +166,4 @@ jobs:
           flags=""
           [ "${{ github.event_name }}" = push ] || [ "${{ inputs.prerelease }}" = true ] && flags="$flags --prerelease"
           [ "${{ inputs.draft }}" = true ] && flags="$flags --draft"
-          gh release create "$TAG" "${{ steps.zip.outputs.zip }}" --target "$GITHUB_SHA" --title "Namco System 11 $TAG" --notes-file notes.md --generate-notes $flags
+          gh release create "$TAG" "${{ steps.zip.outputs.zip }}" --target "$GITHUB_SHA" --title "Tekken 3 $TAG" --notes-file notes.md --generate-notes $flags

@@ -3,26 +3,26 @@
 SYSTEM11_MiSTer core has an MRA for (references/SYSTEM11_MiSTer/releases/_Arcade, main and _alternatives; set names are current MAME's).
 
 SD-card layout (APF; the same convention the PlayStation core's instances use on hardware):
-  Assets/namco_system11/McNast13.NamcoSystem11/<Title>.json   one instance per set: the game list, shipped with the core. pupdate and
+  Assets/tekken3/McNast13.Tekken3/<Title>.json   one instance per set: the game list, shipped with the core. pupdate and
                                                                 Pocket Sync read the files each one names as the game's required files.
                                                                 Main versions (the MRAs in _Arcade/) at the top, the other versions
                                                                 (_Arcade/_alternatives/) in a subfolder _alternatives/.
-  Assets/namco_system11/common/<set>/rom_<index>.bin           that set's images, built from its MRA (rom_packer.py; every CRC checked)
-  Assets/namco_system11/common/c76.bin                         the C76 sound CPU BIOS (namcoc76.zip), shared by every game: data slot 8
+  Assets/tekken3/common/<set>/rom_<index>.bin           that set's images, built from its MRA (rom_packer.py; every CRC checked)
+  Assets/tekken3/common/c76.bin                         the C76 sound CPU BIOS (namcoc76.zip), shared by every game: data slot 8
                                                                 names it in data.json, so the tools list it as the core's BIOS
 Instances use an empty data_path and give each file with its set folder (pupdate resolves files from the filename alone).
 
   make_games.py --instances OUT              write the instance JSONs for every set (no ROMs needed; what the release ships)
   make_games.py --roms DIR --sd OUT [--set S ...]
                                              also pack every set whose zips are in DIR (current MAME names, plus namcoc76.zip) into
-                                             OUT/Assets/namco_system11/common, and c76.bin; OUT can be the SD card's root
+                                             OUT/Assets/tekken3/common, and c76.bin; OUT can be the SD card's root
 """
 import argparse, glob, hashlib, json, os, sys, xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ARCADE = ROOT / "references/SYSTEM11_MiSTer/releases/_Arcade"
-PLATFORM, CORE = "namco_system11", "McNast13.NamcoSystem11"
+PLATFORM, CORE = "tekken3", "McNast13.Tekken3"
 SLOT_OF = {0: 1, 1: 2, 2: 3, 3: 4, 6: 6, 7: 7}   # MRA index -> data slot (pocket/dist/.../data.json); index 8 is the shared c76.bin
 BANK = 0x1000000                                 # data slot 4 holds 16 MB; a larger banked ROM continues in slot 5
 

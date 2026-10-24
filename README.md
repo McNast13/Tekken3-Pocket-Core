@@ -13,6 +13,9 @@ game-specific hardware. One fixed memory map keeps the core small and the testin
 
 See [docs/PLAN.md](docs/PLAN.md) for the hardware, the open problems and the plan.
 
+On the Pocket the core is **Tekken 3** (`McNast13.Tekken3`, platform `tekken3`) under openFPGA > Arcade, separate from the
+System 11 core. Internal build names (`s11full`, `s11_*` variants) still carry the System 11 prefix of the code they come from.
+
 No ROMs are included. You need your own current MAME `tekken3` romset.
 
 Licensed GPL-2.0 (upstream sources are GPL-2.0/3.0; see LICENSE).

@@ -3,14 +3,14 @@
     "magic": "APF_VER_1",
     "metadata": {
       "platform_ids": [
-        "namco_system11"
+        "tekken3"
       ],
-      "shortname": "NamcoSystem11",
-      "description": "Namco System 11 arcade (experimental)",
+      "shortname": "Tekken3",
+      "description": "Tekken 3 arcade (Namco System 12, experimental)",
       "author": "McNast13",
-      "url": "https://github.com/McNast13/NamcoSystem11-Pocket",
+      "url": "https://github.com/McNast13/Tekken3-Pocket",
       "version": "0.0.1",
-      "date_release": "2026-10-19"
+      "date_release": "2026-10-25"
     },
     "framework": {
       "target_product": "Analogue Pocket",
