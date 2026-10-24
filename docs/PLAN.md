@@ -64,7 +64,8 @@ About 44.5 MB of the 64 MB SDRAM. The PSRAMs stay dedicated to VRAM, as on Syste
 
 ## Steps
 
-1. **Turbo measurement on the System 11 core** (branch `s12-turbo-probe` in `../NamcoSystem11`). A "CPU turbo" core setting
+1. **Turbo measurement on the System 11 core as imported here** (build `turbo1`: diagnostic recipe, seed 99,
+   `S11_PROBES=s11_cpuload`, 18,185 ALMs, clk2x setup -0.81 ns on the known VRAM -> `vram_BURSTCNT` path). A "CPU turbo" core setting
    (Off / Memory / Memory + compute) drives `status[80:79]`, and the `s11_cpuload` probe shows on the diagnostic screen how many
    clocks per frame Tekken (tekkenac) spends outside its vsync wait loop (0x8004B5C4). In MAME's attract fight that loop takes only
    ~22% of the instructions, so the game already uses most of the System 11 CPU. Result: the busy-clock ratio between turbo off and on.

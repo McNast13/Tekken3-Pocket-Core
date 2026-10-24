@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Speed probe for the System 12 study: how busy is the MIPS per frame, and how much do PSX_MiSTer's turbo modes
+(CPU turbo core setting -> status[80:79] -> TURBO_MEM / TURBO_COMP) speed up real game code? (needs s11_bootbits.apply and S11_FORCE_DIAG)
+Idle = the MIPS is in Tekken (tekkenac)'s vsync wait loop 0x8004B5C4-0x8004B5D4 (it spins on the vblank counter at 0x8012E06C;
+found with a MAME trace of the attract fight, where the loop takes ~22% of the instructions). Busy = every other clk1x clock.
+Advance = clk1x clocks where the pipeline moves (ce = 1 and no stall), about one instruction each.
+Results are per window of 256 vblank intervals (~4 s) and stay on screen until the next window ends; a change of the turbo
+setting restarts the window. Other games have their wait loop elsewhere: their idle count stays 0.
+Rows (s11_boot_dbg -> PK_DBG2):
+  5 = {TURBO_MEM, TURBO_COMP, 6'b0, windows completed [23:16], frames with no idle clock in the last window [15:0]}
+  7 = average busy clocks per frame
+  6 = average clocks per frame (~564,480 at 60 Hz)
+  8 = average advance clocks per frame while busy (instructions of game work)
+  9 = largest busy clock count in one frame
+  1 = average advance clocks per frame (all)
+Usage: s11_cpuload.apply OUTDIR   (S11_PROBES, after pocket_emu.apply)
+"""
+import re, sys
+from pathlib import Path
+
+top = Path(sys.argv[1]) / "rtl/psx_top.vhd"
+t = top.read_text()
+m = re.search(r"   s11_boot_dbg <= \(.*?;\n(?=   dbg_reached_game <= s11_reached_game;)", t, flags=re.S)
+assert m, "s11_boot_dbg assignment not found (s11_bootbits.apply must be applied)"
+t = t[:m.start()] + """   -- s11_cpuload.apply: MIPS busy / advance clocks per frame (tekkenac vsync wait loop = idle)
+   s11_cpuload : process(clk1x)
+      variable vbl_d : std_logic := '0';
+      variable turbo_d : std_logic_vector(1 downto 0) := "00";
+      variable idle, idle_seen : std_logic := '0';
+      variable n_frm : unsigned(8 downto 0) := (others => '0');
+      variable n_win : unsigned(7 downto 0) := (others => '0');
+      variable c_busy, c_frm, m_busy, r_max : unsigned(31 downto 0) := (others => '0');
+      variable s_busy, s_frm, s_advb, s_adv : unsigned(39 downto 0) := (others => '0');
+      variable n_ovl, r_ovl : unsigned(15 downto 0) := (others => '0');
+      variable r_busy, r_frm, r_advb, r_adv : unsigned(31 downto 0) := (others => '0');
+   begin
+      if rising_edge(clk1x) then
+         if unsigned(zn_dbg_mipspc) >= x"8004B5C4" and unsigned(zn_dbg_mipspc) <= x"8004B5D4" then idle := '1'; else idle := '0'; end if;
+         c_frm := c_frm + 1;
+         if idle = '1' then idle_seen := '1'; else c_busy := c_busy + 1; end if;
+         if ce = '1' and unsigned(dbg_cpu_stall) = 0 then
+            s_adv := s_adv + 1;
+            if idle = '0' then s_advb := s_advb + 1; end if;
+         end if;
+         if (TURBO_MEM & TURBO_COMP) /= turbo_d then
+            n_frm := (others => '0'); n_ovl := (others => '0'); m_busy := (others => '0');
+            s_busy := (others => '0'); s_frm := (others => '0'); s_advb := (others => '0'); s_adv := (others => '0');
+            c_busy := (others => '0'); c_frm := (others => '0'); idle_seen := '0';
+         elsif irq_VBLANK = '1' and vbl_d = '0' then
+            s_busy := s_busy + c_busy; s_frm := s_frm + c_frm;
+            if c_busy > m_busy then m_busy := c_busy; end if;
+            if idle_seen = '0' then n_ovl := n_ovl + 1; end if;
+            c_busy := (others => '0'); c_frm := (others => '0'); idle_seen := '0';
+            n_frm := n_frm + 1;
+            if n_frm = 256 then
+               r_busy := s_busy(39 downto 8); r_frm := s_frm(39 downto 8); r_advb := s_advb(39 downto 8); r_adv := s_adv(39 downto 8);
+               r_max := m_busy; r_ovl := n_ovl; n_win := n_win + 1;
+               n_frm := (others => '0'); n_ovl := (others => '0'); m_busy := (others => '0');
+               s_busy := (others => '0'); s_frm := (others => '0'); s_advb := (others => '0'); s_adv := (others => '0');
+            end if;
+         end if;
+         turbo_d := TURBO_MEM & TURBO_COMP;
+         vbl_d := irq_VBLANK;
+         s11_boot_dbg <= x"00000000" & TURBO_MEM & TURBO_COMP & "000000" & std_logic_vector(n_win) & std_logic_vector(r_ovl) &
+                         std_logic_vector(r_busy) & std_logic_vector(r_frm) & std_logic_vector(r_advb) & std_logic_vector(r_max) &
+                         x"0000000000000000" & std_logic_vector(r_adv);
+      end if;
+   end process;
+""" + t[m.end():]
+top.write_text(t)
+print("s11_cpuload applied")
