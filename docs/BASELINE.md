@@ -1,0 +1,351 @@
+# Baseline: unmodified SYSTEM11_MiSTer compile
+
+Run: Actions #39130913018, Quartus 17.0.2 Lite (`raetro/quartus:mister`), device 5CSEBA6U23I7, fit succeeded (~45 min).
+Reports are in the run's `mister-baseline-reports` artifact.
+
+| Resource | Used | Device (MiSTer) |
+|---|---|---|
+| ALMs (needed) | 37,029 | 41,910 (88%) |
+| Registers | 42,842 | |
+| M10K blocks / bits | 287 / 1.70 Mb | 553 / 5.66 Mb |
+| DSP blocks | 109 | 112 (97%) |
+| PLLs | 4 | 6 |
+
+## By module (ALMs / M10K / DSP)
+| Module | ALM | M10K | DSP | Notes |
+|---|---|---|---|---|
+| `sys_top` framework (ascal, audio_out, hps_io, ...) | ~6,200 | 60 | 23 | MiSTer-only; replaced by Pocket APF (scaler is outside this FPGA) |
+| `emu` total | 30,800 | 227 | 86 | the core proper |
+| - `psx_top` | 21,178 | 171 | 74 | |
+| &nbsp;&nbsp;- gpu | 7,820 | 67 | 44 | |
+| &nbsp;&nbsp;- gte | 4,686 | 1 | 15 | |
+| &nbsp;&nbsp;- cpu (incl. caches) | 3,499 | 78 | 6 | |
+| &nbsp;&nbsp;- dma | 1,703 | 2 | 0 | |
+| &nbsp;&nbsp;- memorymux | 897 | 0 | 0 | |
+| &nbsp;&nbsp;- mdec | 680 | 19 | 9 | **needed for Tekken/S11 intro FMVs** (author restored it; stubbing = black/no movies) |
+| &nbsp;&nbsp;- savestates | 566 | 0 | 0 | cut |
+| &nbsp;&nbsp;- zn1_io | 573 | 4 | 0 | |
+| - `c76_sound` | 7,121 | 55 | 4 | C76 MCU 4,285 ALM / 16 M10K; C352 2,778 ALM / 7 M10K |
+| - `hps_io` | 600 | 0 | 0 | MiSTer-only |
+
+## Timing
+All `emu` clock domains meet setup/hold. The only negative slack (-1.8 ns) is the HDMI PLL domain in `sys_top`, which does not exist on the Pocket.
+
+## Reading this against the Pocket (verify device numbers against Analogue docs)
+Assumed Pocket FPGA (Cyclone V 5CEBA4): ~18.5k ALMs, ~308 M10K (3.1 Mb), ~66 DSP blocks.
+- Essential logic today: cpu 3.5k + gpu 7.8k + gte 4.7k + dma 1.7k + C76/C352 7.1k = **~24.8k ALMs** before memory glue; the budget is ~18.5k with headroom needed for timing closure, so **we must cut roughly 30-40%**.
+- DSP: 86 in `emu` vs ~66 available - GPU (44) and GTE (15) multipliers must be shared/serialized (the PlayStation Pocket port's divider pool and lean memctrl show how).
+- M10K fits (227 vs ~308) but caches (cpu 78) and C76 (55) are big targets; VRAM/RAM must stay off-chip.
+- Free wins: savestates, hps_io, light-gun, cheats, overlay.
+- Biggest unknowns: whether C76 (M37702 soft CPU, 4.3k ALM) can be slimmed, and whether the GPU can be time-multiplexed at an acceptable rate.
+
+Next: re-synthesize `emu` for the Pocket device (raetro/quartus:pocket) with the framework stripped, MDEC/savestates removed, to get a true Pocket-device number.
+
+## Pocket-device synthesis probe (run #39137853331)
+`emu` alone, unmodified, synthesized for 5CEBA4F23C8 with Quartus 18.1.1 (`raetro/quartus:pocket`); synthesis only, no fit
+(ALM count is not reported at this stage; compare in combinational ALUTs). Workflow: `.github/workflows/pocket-probe.yml`.
+
+| | emu (unmodified) | Pocket FPGA (approx.) |
+|---|---|---|
+| Combinational ALUTs | 43,352 | ~25.9k (18.5k ALMs x ~1.4; the MiSTer fit packed 30.8k ALMs for emu, ratio ~0.71 ALM/ALUT) |
+| Registers | 31,385 | ~74k |
+| Block memory bits | 1.32 Mb | 3.08 Mb |
+| DSP blocks | 86 | ~66 |
+
+| Module | ALUTs | Regs | Mem bits | DSP |
+|---|---|---|---|---|
+| psx_top | 29,938 | 19,224 | 919k | 74 |
+| c76_sound (C76 CPU 5.8k, C352 3.7k) | 9,676 | 8,503 | 399k | 4 |
+| hps_io | 921 | 1,155 | 0 | 0 |
+| pll_cfg | 788 | 204 | 0 | 0 |
+| sdram | 411 | 893 | 0 | 0 |
+
+**Conclusion:** unmodified, `emu` is ~65-70% over the Pocket's logic and ~30% over its DSP budget. Reaching playable Tekken 2 means removing
+roughly 17k ALUTs (~40%): savestates/hps_io/pll_cfg (~2k) and, optionally, MDEC, then slimming GPU (multiplier sharing), GTE, CPU caches and the C76 core.
+Next probe variants (`synth/pocket_probe/variants/<name>.sh`, applied before synthesis): no-MDEC, no-savestates, GPU with shared multipliers.
+
+## Variant results
+| Variant | ALUTs | Regs | Mem bits | DSP | Run |
+|---|---|---|---|---|---|
+| baseline | 43,352 | 31,385 | 1,324,039 | 86 | 39137853331 |
+| no_mdec (stub, FMV dead) | 42,179 (-1,173, -2.7%) | 30,482 | 1,264,711 | 77 (-9) | 39138672589 |
+
+**MDEC correction:** the author's comments in `psx_top.vhd` say MDEC was deliberately restored because Tekken/System 11 intro FMVs are
+MDEC streams, and that SPU and cheats were already stubbed to pay for it. Removing it saves only ~1.2k ALUTs and 9 DSP, and kills
+the intro movies (risk: boot code that waits on MDEC DMA could hang - untested). Treat as an optional late cut, not a first one.
+
+### GPU divider pool (variant `gpu_divider_pool`, run 39139784990)
+Port of openfpga-PlayStation `prepare_gpu_divider_pool.py` onto S11 `rtl/gpu.vhd` (six dividers -> one shared, serial). Upstream flags it experimental
+(adds setup latency; its own metadata says pixel equivalence/fit/game/hardware unverified).
+
+| Variant | ALUTs | Regs | DSP |
+|---|---|---|---|
+| baseline | 43,352 | 31,385 | 86 |
+| gpu_divider_pool | 42,627 (-725, -1.7%) | 31,180 | 86 (no change) |
+
+Findings: divider pool saves little (~1.1k ALUTs of dividers -> 386 pool). The GPU is still 10.9k ALUTs; its 44 DSPs are in `gpu_poly` (29) and
+`gpu_pixelpipeline` (15), not the dividers. GTE 6.3k ALUTs / 15 DSP, CPU 4.1k ALUTs / 6 DSP, DMA 2.5k.
+
+### What the PlayStation Pocket port actually does (from source, not yet measured here)
+- CPU: replaced with `psx_cpu.sv`, a **sequential, non-cycle-accurate R3000** with no caches (vs ~4.1k ALUT + 78 M10K cached CPU here).
+- GTE: `rtl/gte/laxer_mister_adapter.sv` wraps Laxer3a's GTE (`references/Laxer3a_PSX`) rather than the MiSTer pipelined GTE.
+- GPU: divider pool (above), `psx_gpu_read_math`; VRAM in PSRAM (`psx_vram_psram`).
+These are the real levers. Cycle accuracy matters less for System 11 only if Tekken 2's timing tolerates it - needs testing.
+
+### Correction + GTE swap (variant `gte_laxer`, run 39141582148)
+**Correction:** earlier I wrote that the PS Pocket port uses a sequential CPU (`psx_cpu.sv`). That is an experimental component, not the shipped core.
+The shipped core is upstream PSX_MiSTer plus ~30 area patches (`scripts/prepare_full_pocket.py` lists them: gpu-line-share, gpu-poly-share, gpu-mul-narrow,
+gpu-half-pipe, gte-*-ram, gte-adapter (Laxer), dma-*-ram, mdec-*, ...). S11's gte/mdec/dma/gpu_poly/gpu_line are ~identical to upstream; gpu.vhd and cpu.vhd have diverged.
+
+| Variant | ALUTs | Regs | Mem bits | DSP |
+|---|---|---|---|---|
+| baseline | 43,352 | 31,385 | 1,324,039 | 86 |
+| gpu_divider_pool | 42,627 (-725) | 31,180 | 1,324,039 | 86 |
+| **gte_laxer** (Laxer3a GTE) | **39,697 (-3,655, -8.4%)** | 30,144 | 1,351,175 | 83 |
+
+GTE swap is the best single cut so far. Not functionally verified (S11 savestates, widescreen and turbo are unsupported by this GTE).
+
+### Patch-stack results (synthesis only; none functionally verified)
+`ps_patches` = the 8 openfpga-PlayStation patches that apply to S11 RTL unchanged (dma_channel_ram, dma_chcr_ram, gpu_area_reg, gpu_mul_narrow,
+gpu_poly_onehot, gpu_no_watchdog, mdec_mednafen, mdec_idct_pipe); `area_profile` = Quartus area settings (no RTL change). Tools: `tools/ps_patch_survey.py`, `tools/ps_patch_chain.py`.
+
+| Variant | ALUTs | Regs | DSP | vs baseline |
+|---|---|---|---|---|
+| baseline | 43,352 | 31,385 | 86 | |
+| area_profile | 43,180 | 31,110 | 88 | -172 |
+| ps_patches | 42,415 | 30,779 | 85 | -937 |
+| gte_laxer | 39,697 | 30,144 | 83 | -3,655 |
+| gte_laxer + area_profile | 39,626 | 29,948 | 85 | -3,726 |
+| **gte_laxer + ps_patches** | **38,850** | 29,536 | 82 | **-4,502 (-10.4%)** |
+| **gte_laxer + ps_patches + area_profile** | **38,183** | 29,316 | 83 | **-5,169 (-11.9%)** |
+
+(An earlier combined run showed a worse number due to a tooling bug that reverted the Laxer GTE; fixed in `ps_patches.apply`.)
+Remaining gap to the ~26k ALUT estimate: ~12k. Patches that did not apply (need manual port to S11's diverged gpu_poly/gpu/cpu):
+gpu_poly_share, gpu_vertex_ram, gpu_half_pipe, gpu_dy_ram, gpu_sort_reread, gpu_tag_generation, gpu_read_late, gpu_cache_controls, cpu_execute_share, cpu_regfile_ram, gte RAM conversions (target MiSTer GTE).
+
+## Sound blocks and CPU patches (synthesis only, ALUTs = "logic" figure; add 875 memory ALUTs)
+
+| Variant | ALUTs | Regs | DSP | Notes |
+|---|---|---|---|---|
+| gte_laxer + ps_patches (11) | 37,948 | 29,358 | 60 | DSP now under the ~66 budget |
+| + c76_ram_bram | 35,762 | 25,254 | 60 | c76's 512 B internal RAM was flip-flops: two combinational dbg taps (`dbg_ram80/83`) blocked M10K inference. Tied off. |
+| + sound_no_debug | 35,762 | 25,254 | 60 | no change: Quartus already pruned the c76_sound diagnostics |
+| + cpu_execute_share | 35,639 | 25,254 | 60 | only -123 ALUTs; patch applies to S11 cpu.vhd with its SHA pin rebound |
+
+Where the area is now (hierarchy, ALUTs): gpu 10.5k, c76_sound 7.7k (m37702 2.8k, c352 3.8k, c76 wrapper ~1k incl. 128 B SFR file), cpu 4.0k,
+gte 2.5k, dma 1.6k, memorymux 1.3k, mdec 1.2k; non-core (SYSTEM11 top, sys/, glue) the remainder.
+`cpu_regfile_ram` was not tried: S11's cpu.vhd uses a hand-added flip-flop shadow register file (`regsFF`, HW workaround for an MLAB
+read-back bug) that the patch does not model. Remaining gap to ~26k ALUTs: ~10k. The GPU is the largest remaining block.
+
+## Pocket device resources (verified, replaces the earlier estimates)
+
+Source: a real Quartus 18.1.1 fitter report for the Pocket's device `5CEBA4F23C8`
+(pgate1/PlayStation_on_FPGA `Pocket/ap_core.fit.summary`; also the device used by openfpga-PlayStation), plus Analogue's
+[developer overview](https://analogue.co/developer/docs) for the board (two FPGAs; the core FPGA is fully available).
+
+| Resource | Capacity | Notes |
+|---|---|---|
+| ALMs | **18,480** | pgate1's reduced PSX (no sound, no FMV) fits at 17,060 (92%) |
+| Block RAM | **308 M10K / 3,153,920 bits** | that core uses 307/308 |
+| DSP blocks | **66** | that core uses 58 |
+| PLLs | 4 | |
+| I/O pins | 224 (all used by Analogue's wrapper in that fit) | |
+| External RAM | 2x16 MB cellular RAM (PSRAM), 64 MB SDRAM, 256 KB async SRAM | per Analogue's published board spec (secondary sources); not in the dev docs overview |
+
+Our current best probe (gte_laxer + ps_patches + c76_ram_bram + cpu_execute_share): 35,639 logic ALUTs (+875 memory ALUTs),
+25,254 registers, 60 DSP, **1,356,039 block-memory bits (43% of capacity)**. Synthesis reports ALUTs, not ALMs; at the
+MiSTer fit ratio (~0.71 ALM/ALUT) that is ~26k ALMs vs 18,480 available, i.e. **~7.5k ALMs (~29%) over**, unverified until a fit.
+
+What can be leveraged: ~1.8 Mbit of M10K is unused and 6 DSPs are free. Logic that can be re-expressed as RAM/ROM
+(register arrays, lookup tables, MLAB-based RAM which burns ALMs) should move to M10K; multipliers can use the spare DSPs.
+
+## Real fit on the Pocket device (run 39153536343, Quartus 18.1.1, 5CEBA4F23C8, all `emu` ports virtual except the SDRAM clocks)
+
+Variant: gte_laxer + ps_patches + c76_ram_bram + cpu_execute_share. The fitter fails at packing, but reports the demand:
+
+| Resource | Needed | Device | |
+|---|---|---|---|
+| ALMs | **25,557** | 18,480 | 138% (**7,077 over; -27.7% required**) |
+| LABs | 2,567 | 1,848 | |
+| Registers | 24,446 | | |
+| Block memory bits | 1,356,039 | 3,153,920 | 43% |
+| DSP blocks | 60 | 66 | 91% |
+| PLLs | 2 | 4 | |
+
+ALM breakdown: 8,507 LUT+register, 12,364 LUT-only, 3,365 register-only, 700 memory; dense packing recovers ~0.
+The ALUT-to-ALM estimate (0.71) was right: 25,557 / 36,637 = 0.70. Real figure for planning: **~7.1k ALMs to remove**
+(plus headroom for timing closure and the Pocket shell/memory controller, which are not in this number).
+
+## Placed breakdown (fit on 5CEBA9F23C8, run 39153542286 - same design, bigger part so it completes)
+
+Total 25,282 ALMs, 26,400 regs, 232 M10K blocks (of 308), 60 DSP. ALMs by block (hierarchy totals):
+
+| Block | ALMs | Notes |
+|---|---|---|
+| psx_top (all PS1 core) | 16,973 | |
+| - gpu | 6,991 | poly 1,759, pixelpipeline 1,754, videoout ~1,230, line 445, rect 258 |
+| - cpu | 3,378 | 2,942 local (includes the 32x32 flip-flop `regsFF`) |
+| - gte (Laxer) | 2,108 | |
+| - dma 1,098; memorymux 882; mdec 672; timer 271; memctrl 244 | | |
+| c76_sound | 5,360 | m37702 1,751; c76 wrapper 751; c352 2,789 |
+| zn1_io | 574 | System 11 I/O |
+| **MiSTer scaffolding the Pocket shell replaces** | **~3,500** | emu glue 960, pll_cfg 698, hps_io 640, savestates 543, sdram 372, video_calc/freak/scale ~650 |
+
+Excluding the scaffolding, the core is ~21.8k ALMs; the Pocket wrapper (APF bridge, data-slot loader, memory controller,
+video/audio out) must then be added, so the realistic cut from the *core* is still ~5-6k ALMs.
+
+### Sequential PS CPU is NOT a saving
+`psx_cpu.sv` (openfpga-PlayStation, "sequential R3000 baseline", not shipped in its core) synthesized alone for the Pocket part:
+**6,601 ALUTs, 2,325 regs, 0 DSP** vs the cached S11 `cpu.vhd` at ~4.0k ALUTs. It is larger (multiply/divide in LUTs) and slower, and needs an adapter
+to the cached memory protocol. Dropped as an option.
+
+## Scaffolding drop measured (variant drop_scaffold: stub savestates + pll_cfg; fit on 5CEBA9F23C8, run 39157057553)
+
+| | ALMs | Regs | M10K |
+|---|---|---|---|
+| before (same stack) | 25,282 | 26,400 | 232 |
+| after | **22,553** | 22,816 | 230 |
+| change | **-2,729** | -3,584 | -2 |
+
+More than the ~1.2k the two modules' own sizes suggest: with the savestate engine gone, the per-module save/load read paths
+(SS_DataRead_*, statemanager) are pruned too. Remaining gap to the Pocket's 18,480 ALMs: **~4,070 plus the Pocket shell**
+(APF bridge, data-slot loader, memory controller, video/audio out), which are not yet counted.
+Not yet dropped: hps_io/hps_ext, video_freak/scale/gamma, sdram2, debug glue in SYSTEM11.sv (likely another ~1-1.5k, but partly replaced by shell logic).
+
+## Second scaffolding batch (variant drop_scaffold2: video_freak, gamma_corr, savestate_ui, hps_ext stubbed; run 39159018610)
+
+22,553 -> **22,040 ALMs (-513)**, regs 22,816 -> 22,025, M10K 230 -> 229. Cumulative scaffolding drop: 25,282 -> 22,040 (**-3,242 ALMs**).
+Remaining gap to 18,480: **~3,560 ALMs plus the Pocket shell**. Still in: hps_io (file loading; replaced by the APF data-slot loader),
+sdram + sdram2, debug glue in SYSTEM11.sv.
+
+## GPU patches on S11 (fits on 5CEBA9F23C8)
+
+| Step | ALMs | Regs | Notes |
+|---|---|---|---|
+| after scaffold drops | 22,040 | 22,025 | |
+| + gpu_tag_generation (S11 port, 11-bit tag -> 19-bit tag RAM; `tools/s11_gpu_tag_generation.py`) | **21,754** (-286) | 21,707 | all 12 shipped PS patches now apply |
+| + gpu_timing_prune (poly + 5 auxiliary engines) | 21,765 (+11) | 21,748 | **no gain**: REPRODUCIBLEGPUTIMING is tied to 0, so Quartus already removed the counters. Left in `ps_patch_chain.py` as opt-in (`gpu_timing_prune`), not in the default chain. |
+
+Remaining gap to 18,480: **~3,270 ALMs plus the Pocket shell.** Not ported: gpu_coordinates, gpu_borrowed_inputs (needs gpu_divider_pool, which saved ~700 ALUTs alone).
+
+## Pocket shell skeleton (pocket/, workflow `pocket-shell.yml`, run 39167013722)
+
+Analogue's APF top + pin map (copied from MIRLO64's platform/pocket; four `altera_reserved_*` JTAG passthrough ports removed - they counted as user I/O, 228 vs 224 pins)
+and a tied-off `core_top`. Real compile on 5CEBA4F23C8 with the real pin map: fitter **successful**, **124 ALMs**, 270 regs, 224/224 pins, no RAM/DSP, positive slack in all clocks.
+So the *mandatory* APF part is ~125 ALMs; the shell cost is in what we add: bridge command handler + data-slot loader, SDRAM/PSRAM controllers, video/audio output, input mapping.
+
+Precedent: MIRLO64 (N64 on Pocket, tortugaveloz/MIRLO64, Apache-2.0 + Analogue APF license) closes timing at ~17.4-17.7k ALMs (94-96%) including its shell, using
+OPTIMIZATION_TECHNIQUE AREA, PHYSICAL_SYNTHESIS_EFFORT FAST, PLACEMENT_EFFORT_MULTIPLIER 10 and a fitter-seed sweep. Plan for ~17.4k total, not 90%.
+
+## Area-mode settings, further drops, DMA probe (fits on 5CEBA9F23C8; base = 21,754 ALMs)
+
+| Variant on top of the base stack | ALMs | Change | Notes |
+|---|---|---|---|
+| area_profile (synthesis settings from the PS port) | 21,443 | **-311** | run 39167778357 |
+| area_profile + fitter_profile (MIRLO64: phys. synthesis FAST, register duplication, placement effort 10) | 21,948 | +505 vs area only | trades area for timing; not an area saving. Use only if timing needs it. |
+| drop_scaffold3 (gpu_overlay + hps_io video_calc stubs) | 21,644 | **-110** | run 39169102975 |
+| drop_scaffold3 + dma_no_cd_spu (DMA channels 3/4 removed) | 21,623 | -21 more | run 39169109431. Negligible, because the CD/SPU data inputs are constants and Quartus had folded them. Not worth the risk; not adopted. |
+
+memorymux (892 ALMs): not probed. Its legacy CD/SPU paths are the same kind of folded constants and the BIOS/fast-boot states are part of the boot/ROM state machine.
+Expected with area_profile + drop_scaffold3: ~21,330 ALMs. Remaining to the ~17.4k total target (MIRLO64 precedent) is ~3.9k for the core, minus the rest of the shell.
+
+## C76 SFR to M10K (2026-10-19, run 39230421553, 5CEBA9F23C8 fit)
+Stack gte_laxer, ps_patches, c76_ram_bram, cpu_execute_share, drop_scaffold 1-3, c76_sfr_ram (no area_profile): **21,272 ALMs**, 20,330 regs,
+60 DSP, 1.35 Mbit. The C76 wrapper's local logic fell 751 -> 402 ALMs (generic SFR readback store in M10K; ten wrapper-consumed SFRs stay in FFs).
+Not simulated. Placed: c76_sound 5,058 (m37702 1,756, c352 2,824, wrapper 402), psx 14,834 (gpu 6,724, cpu 2,484, gte 2,116, memorymux 970, dma 991, mdec 600),
+hps_io 240, sdram 367.
+
+## cpu_regs_mlab: no meaningful gain (2026-10-19, run 39233349846)
+Stack above + cpu_regs_mlab + area_profile: **20,516 ALMs** (61 DSP). cpu local logic 2,109 -> 2,034 (-75) only; Quartus had already
+absorbed most of the FF shadow regfile. Not worth the hardware risk (the 2026-06 MiSTer note claims MLAB reads failed) - NOT in the stack.
+area_profile carries most of the 756 ALM drop (gpu 6,724 -> 6,492, gte 2,116 -> 1,991, memorymux 970 -> 834, dma 991 -> 914).
+Working stack: gte_laxer, ps_patches, c76_ram_bram, cpu_execute_share, drop_scaffold 1-3, c76_sfr_ram, area_profile (~20.55k ALMs; ~3.1k above the 17.4k target).
+
+## no_mdec + c352_tag_ram (2026-10-19, run 39237880241, 5CEBA9F23C8 fit)
+Working stack + no_mdec + c352_tag_ram: **19,003 ALMs** (18,571 regs, 53 DSP, 1.29 Mbit). c352 2,789 -> 2,106 ALMs (-683: wc_tag/pf_addr in M10K);
+the rest of the drop is MDEC (and its 8 DSPs). Hierarchy: c76_sound 4,327, psx_top 13,330 (cpu 2,366, gte 1,964, m37702 1,827, gpu ~6.5k, memorymux 833, dma 872, zn1_io 570),
+MiSTer scaffolding still present: hps_io 238 + sdram 348 + top-level glue ~760.
+c352_tag_ram checked with the dual-DUT nvc bench (tests/c352/run.sh): 0-1 transient sample differences in 300-600 samples at ROM latency 3/10/20/40, same final output.
+
+## drop_guns (2026-10-19, run 39240485239, 5CEBA9F23C8 fit)
+Stack + drop_guns: **18,901 ALMs** (18,646 regs, 49 DSP). Only -102 vs 19,003 (fit noise is about +-150: psx_top moved +150 while the top-level glue fell ~230).
+Placed: c76_sound 4,318 (c352 2,113, m37702 ~1.8k, c76 wrapper ~318), psx_top 13,483, hps_io 222, sdram 345, top-level glue ~534.
+Core without MiSTer scaffolding (hps_io + sdram + glue ~1.1k) is ~17.8k; the Pocket shell then adds its own loader/memory controller/video/audio/input.
+Stack: gte_laxer, ps_patches, c76_ram_bram, cpu_execute_share, drop_scaffold 1-3, c76_sfr_ram, area_profile, no_mdec, c352_tag_ram, drop_guns.
+
+## no_texfilter: gate reached (2026-10-19, run 39243414050, 5CEBA9F23C8 fit)
+Stack + no_texfilter: **17,788 ALMs** (18,040 regs, 37 DSP, 187 RAM blocks). -1,113 vs 18,901. gpu 6.5k -> 5.4k, psx_top 13.5k -> 12.3k.
+The GPU pixel pipeline built four texture taps (tag RAM, texel cache, CLUT RAM + shadow, colour multipliers) for the MiSTer bilinear-filter option;
+gpu_poly is the only driver of pipeline_filter, so tying it low lets synthesis prune three taps. Original System 11 hardware has no texture filtering, so this loses nothing authentic.
+area_aggr (OPTIMIZATION_MODE AGGRESSIVE AREA etc.) gave 18,940 vs 18,901: no gain, not adopted.
+Stack: gte_laxer, ps_patches, c76_ram_bram, cpu_execute_share, drop_scaffold 1-3, c76_sfr_ram, area_profile, no_mdec, c352_tag_ram, drop_guns, no_texfilter.
+
+## MDEC restored + gpu_divider_pool (2026-10-19, runs 39246138200 and 39248848354, 5CEBA9F23C8 fit)
+- MDEC back in (no_mdec removed), no pool: **18,409 ALMs** (mdec 605 ALMs, 8 DSP).
+- MDEC in + gpu_divider_pool: **18,072 ALMs** (18,586 regs, 45 DSP, 202 RAM blocks). Pool saved 337 (six dividers -> one shared serial divider).
+  Upstream marks the pool experimental (setup latency per polygon, pixel equivalence unverified) - first hardware thing to suspect if polygons glitch.
+Stack: gte_laxer, ps_patches, gpu_divider_pool, c76_ram_bram, cpu_execute_share, drop_scaffold 1-3, c76_sfr_ram, area_profile, c352_tag_ram, drop_guns, no_texfilter. Includes ~1.1k MiSTer scaffolding.
+
+## Real Pocket-part fit (2026-10-19, run 39256943618, 5CEBA4F23C8) - FAILED on LABs
+Same stack as the 18,072 result, fitted on the real device: **fitter fails**, "requires 1861 LABs, device has 1848" (13 LABs over). Fitter reports 18,322 / 18,480 ALMs (99%)
+before aborting (tight packing adds ALMs vs the A9 fit's 18,072). So the ~1.1k MiSTer scaffolding (hps_io, sdram, glue) has to go, or ~150-300 ALMs more must be cut, before it fits at all.
+Timing analysis needs a completed fit; running it on the 5CEBA9F23C8 (same C8 grade, looser placement => optimistic) instead.
+
+## Timing check (2026-10-19, run 39264619959, 5CEBA9F23C8 fit + quartus_sta, slow corner)
+Stack as in the 18,072 result (MDEC in, divider pool, no_texfilter), SDC = probe.sdc (50 MHz ref, derived PLL clocks, pll/pll2 async groups, GTE multicycle 2 as in the PS Pocket core).
+Fit: 18,044 ALMs. The A9 part is the same C8 grade but placed far looser than the real part will be, so these numbers are optimistic.
+
+| Clock | Target | Fmax | Worst slack |
+|---|---|---|---|
+| clk_1x | 33.87 MHz | 41.6 MHz | +5.1 ns (CPU decode -> memorymux) |
+| clk_2x | 67.74 MHz | 55.5 MHz | **-3.26 ns** |
+| clk_3x (SDRAM, replaced by the shell) | 101.6 MHz | 120.9 MHz | met |
+
+clk_2x: over 400 failing endpoints, all below -2 ns: gpu_rect yPos/etc (-3.26, 234 endpoints), gpu drawingAreaTop compares (-3.19), gpu_pixelpipeline (-3.04). Hold is met.
+Without the GTE multicycle constraint the Laxer GTE shows -5.2 ns at clk_2x (GuardianSoul's adapter runs it on a half-rate CE, hence the constraint).
+The PS Pocket core closes this domain with GPU timing patches that are not ported yet: gpu_area_reg (registers the drawing-area compares), gpu_coordinates, gpu_payload_timing, gpu_cache_controls, gpu_read_late, gpu_sort_reread (several need gpu_divider_pool, which is now in).
+First check run (39256943618) on the real 5CEBA4F23C8: fitter fails, 1,861 LABs needed vs 1,848 (13 over).
+
+## gpu_area_reg + gpu_rect_timing (2026-10-19, run 39268174196, 5CEBA9F23C8 fit + sta)
+18,000 ALMs. clk_2x Fmax 55.5 -> 57.9 MHz, worst slack -3.26 -> **-2.51 ns**; clk_1x 41.4 MHz (met). gpu_rect and drawing-area paths are no longer on the list.
+New worst paths (400 endpoints between -2.5 and -2.0 ns) all end in gpu.vhd reqVRAMwrap: request mux -> rounded size -> compare -> subtract in the cycle vram_RD is issued.
+gpu_rect_timing is mine (CHECKPOS split into three steps; the PS port has no equivalent). gpu_area_reg is the PS patch lifted out of its script.
+Next: gpu_read_late (PS patch, adapted to S11 arithmetic): remain/next/wrap computed one clk2x after the request.
+
+## gpu_read_late: clk_2x essentially closed (2026-10-19, run 39271345821, 5CEBA9F23C8 fit + sta)
+Stack + gpu_area_reg + gpu_rect_timing + gpu_read_late: 18,017 ALMs. clk_2x Fmax **67.63 MHz** (target 67.74), clk_1x 41.0 MHz.
+Worst slack in the whole design **-0.024 ns** (setup, slow model; 2 endpoints, gpu_line/vram_WE -> vram_BURSTCNT); everything else >= 0. Hold met, no unconstrained clocks.
+Progress of the clk_2x worst slack: -5.2 (GTE, no multicycle) -> -3.26 -> -2.51 -> -0.02.
+Caveats: A9 placement is looser than the real part; real 5CEBA4F23C8 fit still fails by 13 LABs with the MiSTer scaffolding in; SDC is the probe's, not the Pocket shell's (clock relationships will change).
+gpu_read_late contract: no vram_DOUT_READY in the clk_2x right after a read request.
+Stack: gte_laxer, ps_patches, gpu_divider_pool, gpu_area_reg, gpu_rect_timing, gpu_read_late, c76_ram_bram, cpu_execute_share, drop_scaffold 1-3, c76_sfr_ram, area_profile, c352_tag_ram, drop_guns, no_texfilter.
+
+## Full core + Pocket shell on the real 5CEBA4F23C8 (2026-10-19, pocket-shell.yml project=s11full)
+SYSTEM11.sv (adapted by pocket/core/emu/pocket_emu.apply) + variants + shell compiles through synthesis first time (44 DSP, 1.37 Mbit RAM).
+- s11.qsf's performance settings (HIGH PERFORMANCE EFFORT, physical synthesis, register/logic duplication): fitter fails, 1,867 LABs needed of 1,848 (run 39293097968, 18,467 ALMs).
+- BALANCED + physical synthesis off (run 39295199679): still 1,850 LABs needed, fails by 2.
+- **AGGRESSIVE AREA + physical synthesis / duplication off + REMOVE_REDUNDANT_LOGIC_CELLS (run 39295212505): fits, 18,260 / 18,480 ALMs (99%), MDEC included.**
+  Timing (slow 85C, real pins, SDRAM pin constraints applied): clk_3x +0.42, sdram_chip_clk +1.32, clk_1x +1.92, video +3.5, clk_74a +4.0, holds all positive;
+  **clk_2x -0.63 ns** (the only failing domain). Settings are now part of tools/build_core_tree.py's s11full.qsf.
+- Shell cost (synthesis ALUTs): sdram ctrl 434, vram 372, audio 257, core_bridge_cmd 202, apf_video 200, ioctl bridge 156, APF pad controller 152.
+
+## Timing closure of the full core on the real part (2026-10-19)
+After the area-first fitter settings (above), seed sweep + path reports (pocket-shell.yml now runs report_paths.tcl):
+- All 300 worst clk_2x endpoints launched from `emu:s11|zn_keycus_id` (per-game config register fanning into the GPU's texture logic). It is written once
+  by the download while the core is in reset, so `pocket/core/core_constraints.sdc` now false-paths the 14 static config registers.
+  Seed 44 then met every setup/hold/recovery/removal check in the slow 85C model (clk_2x +0.46, clk_3x +0.52, sdram_chip_clk +1.33, clk_1x +2.65,
+  clk_74a +3.9, video +4.2) at 18,289 ALMs (run 39302880283).
+- The audio PLL clocks were missing from the SDC clock groups (recovery -88 ns on the dcfifo clear); fixed. With that, seed 44 shows SDRAM capture hold -0.16..-0.22 ns
+  (clk_3x, slow and fast models; the CL3 capture uses setup multicycle 2 with next-beat hold left as a real check), seed 22 clk_2x setup -0.07 (85C) / -0.42 (0C), seed 66 does not fit.
+- Next: D1_DELAY taps on dram_dq (the PS Pocket recipe's physical fix for next-beat hold) and a seed sweep.
+
+## Seed sweep with hold optimisation (2026-10-19, runs 39318119076/128803/138326/148815)
+OPTIMIZE_HOLD_TIMING "ALL PATHS" + OPTIMIZE_MULTI_CORNER_TIMING ON added; D1_DELAY on dram_dq (taps 4, 6, 8) changed nothing (seeds 44/22 give identical numbers).
+All fit at 18,23x-18,29x ALMs; none is clean across all four timing models yet:
+| Seed | ALMs | Worst failing check |
+|---|---|---|
+| 44 | 18,289 | hold -0.22 ns (clk_1x -> clk_3x handoff, ramdownload_wraddr -> ch3_adr_q, skew 0.52 > data delay 0.41); every setup check met (slow 85C) |
+| 22 | 18,261 | clk_2x setup -0.42 (0C), -0.07 (85C): psx_vram_psram busy -> gpu vram_BURSTCNT |
+| 7 | 18,231 | clk_2x setup -0.27, hold -0.12 |
+| 99 | 18,266 | clk_3x setup -0.16 (85C), hold -0.04 |
+Static-config false path and audio clock group are in; recovery/removal are clean.

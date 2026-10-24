@@ -1,0 +1,15 @@
+[submodule "references/SYSTEM11_MiSTer"]
+	path = references/SYSTEM11_MiSTer
+	url = https://github.com/XelaNotPu/SYSTEM11_MiSTer
+[submodule "references/openfpga-PlayStation"]
+	path = references/openfpga-PlayStation
+	url = https://github.com/GuardianSoul/openfpga-PlayStation
+[submodule "references/PSX_MiSTer"]
+	path = references/PSX_MiSTer
+	url = https://github.com/MiSTer-devel/PSX_MiSTer
+[submodule "references/Laxer-PS-GTE"]
+	path = references/Laxer-PS-GTE
+	url = https://github.com/Laxer3a/PS-GTE.git
+[submodule "references/MIRLO64"]
+	path = references/MIRLO64
+	url = https://github.com/tortugaveloz/MIRLO64.git

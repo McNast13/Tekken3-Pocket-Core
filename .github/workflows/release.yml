@@ -1,0 +1,169 @@
+name: Release
+# Builds the game core (no diagnostic screen) with the release recipe at the fitter seed of the build tested on a Pocket (a release must
+# be the tested placement: another seed is the same design but a different, untested fit), stamps the version into core.json and
+# publishes a GitHub release with the SD-card zip (no ROMs). To release a new seed, test that seed on a Pocket first.
+# Trigger: push a tag like v0.1.0, or run it by hand (Actions -> Release -> Run workflow) with a tag name.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "release tag (created on the current commit if it does not exist), e.g. v0.1.0"
+        required: true
+      seeds:
+        description: "fitter seed of the build tested on a Pocket, as a one-element JSON list (only change it after testing that seed)"
+        default: "[22]"
+      prerelease:
+        description: "mark as pre-release"
+        type: boolean
+        default: true
+      draft:
+        description: "create as draft (publish by hand after checking)"
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+env:
+  # Release recipe = the game build tested on the device (game22, docs/SHELL.md 2026-10-24): every default variant (real MDEC,
+  # full-rate PSRAM VRAM, the PS 0.5.6 GPU/GTE/DMA patches, the GPU timing variants), without the bring-up probe export
+  # (s11_bootbits; PK_DBG2 tied off by s11_dbg2_zero), outputs on the rising edge. Seed 22 is the seed tested on the device (v0.1.1).
+  S11_SKIP: s11_bootbits
+  S11_PROBES: s11_dbg2_zero
+  QSF_MACROS: 'set_global_assignment -name VERILOG_MACRO "S11_POSEDGE_OUT=1"'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ${{ fromJSON(inputs.seeds || '[22]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: git submodule update --init --depth 1 references/SYSTEM11_MiSTer references/openfpga-PlayStation references/Laxer-PS-GTE references/PSX_MiSTer
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache
+      - name: Core source tree
+        run: python3 tools/build_core_tree.py pocket/build/core_tree
+      - name: Seed and macros
+        run: printf '\nset_global_assignment -name SEED %s\n%s\n' "${{ matrix.seed }}" "$QSF_MACROS" >> pocket/project/s11full.qsf
+      - name: Compile
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD/pocket:/pocket" -w /pocket/project raetro/quartus:pocket \
+            sh -c "quartus_sh --flow compile s11full; quartus_sta -t report_paths.tcl s11full" | tee build.log || true
+      - name: Result
+        id: result
+        shell: bash
+        run: |
+          mkdir -p cand
+          if ls pocket/project/output_files/s11full.rbf >/dev/null 2>&1; then
+            python3 tools/package_pocket.py --rbf pocket/project/output_files/s11full.rbf --out cand/package
+            # worst slack over every model/clock/check in the STA summary (more negative = worse)
+            worst=$(grep -E '^Slack' pocket/project/output_files/s11full.sta.summary | awk '{print $3}' | sort -g | head -1)
+            echo "${worst:-0}" > cand/slack
+          else
+            echo "nofit" > cand/slack
+          fi
+          echo "${{ matrix.seed }}" > cand/seed
+          cp pocket/project/output_files/s11full.fit.summary pocket/project/output_files/s11full.sta.summary cand/ 2>/dev/null || true
+          { echo "seed ${{ matrix.seed }}: worst slack $(cat cand/slack)"; echo '```'; cat cand/s11full.fit.summary 2>/dev/null; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cand-${{ matrix.seed }}
+          path: |
+            cand
+            build.log
+
+  release:
+    needs: build
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cand-*
+          path: cands
+      - name: Pick the best seed
+        id: pick
+        shell: bash
+        run: |
+          best=""; best_slack=""
+          for d in cands/cand-*/cand; do
+            s=$(cat "$d/slack"); echo "seed $(cat $d/seed): $s"
+            [ "$s" = nofit ] && continue
+            if [ -z "$best" ] || awk -v a="$s" -v b="$best_slack" 'BEGIN{exit !(a>b)}'; then best=$d; best_slack=$s; fi
+          done
+          [ -n "$best" ] || { echo "::error::no seed fitted the device"; exit 1; }
+          echo "dir=$best" >> "$GITHUB_OUTPUT"
+          echo "seed=$(cat $best/seed)" >> "$GITHUB_OUTPUT"
+          echo "slack=$best_slack" >> "$GITHUB_OUTPUT"
+      - name: Stamp version and zip
+        id: zip
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          pkg=${{ steps.pick.outputs.dir }}/package
+          python3 - "$pkg/Cores/McNast13.NamcoSystem11/core.json" "${TAG#v}" <<'EOF'
+          import json, sys, datetime
+          p, ver = sys.argv[1], sys.argv[2]
+          j = json.load(open(p))
+          j["core"]["metadata"]["version"] = ver
+          j["core"]["metadata"]["date_release"] = datetime.date.today().isoformat()
+          json.dump(j, open(p, "w"), indent=2)
+          EOF
+          zip_name="NamcoSystem11-pocket-core-${TAG}.zip"
+          (cd "$pkg" && zip -r "$GITHUB_WORKSPACE/$zip_name" Cores Platforms Assets LICENSE.txt)
+          echo "zip=$zip_name" >> "$GITHUB_OUTPUT"
+      - name: Release notes
+        shell: bash
+        run: |
+          d=${{ steps.pick.outputs.dir }}
+          {
+            echo "Beta of the Namco System 11 arcade core for the Analogue Pocket (port of SYSTEM11_MiSTer, built on the openFPGA PlayStation core)."
+            echo
+            echo "**Install:** unzip onto the root of the SD card. The core appears under openFPGA > Arcade Multi > Namco System 11."
+            echo "ROMs and the C76 BIOS are not included: build the game files from your own current-MAME romsets with"
+            echo "tools/make_games.py, and put c76.bin (from namcoc76.zip) in Assets/namco_system11/common/ (see the README)."
+            echo "pupdate and Pocket Sync list each game's required files."
+            echo
+            echo "**Tested on a Pocket:** Tekken, Tekken 2, Soul Edge, Xevious 3D/G, Dancing Eyes, Star Sweep, Pocket Racer, Prime Goal EX"
+            echo "and Kosodate Quiz My Angel 3. Not tested yet: Point Blank 2 / Gunbarl and Dunk Mania."
+            echo
+            echo "**Known limitations:** to change game, quit the core and open it again (no Load game); game settings (EEPROM) are"
+            echo "not kept between launches yet; not every regional version in _alternatives has been tried."
+            echo
+            echo "Build: fitter seed ${{ steps.pick.outputs.seed }}, worst-case timing slack ${{ steps.pick.outputs.slack }} ns."
+            echo
+            echo '<details><summary>Fit summary</summary>'
+            echo; echo '```'; cat "$d/s11full.fit.summary" 2>/dev/null; echo '```'; echo '</details>'
+          } > notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          # A release packaged by hand from the tested bitstream (tools/package_pocket.py + gh) already exists when its tag is pushed:
+          # leave it alone and check that this build reproduces its bitstream instead of failing on "release already exists".
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            mkdir -p existing && gh release download "$TAG" -p '*.zip' -D existing
+            unzip -q -o existing/*.zip 'Cores/McNast13.NamcoSystem11/bitstream.rbf_r' -d existing/x
+            if cmp existing/x/Cores/McNast13.NamcoSystem11/bitstream.rbf_r \
+                   ${{ steps.pick.outputs.dir }}/package/Cores/McNast13.NamcoSystem11/bitstream.rbf_r; then
+              echo "::notice::release $TAG already exists; this build reproduces its bitstream byte for byte (left unchanged)"
+              exit 0
+            fi
+            echo "::error::release $TAG already exists and its bitstream differs from this build (left unchanged)"
+            exit 1
+          fi
+          flags=""
+          [ "${{ github.event_name }}" = push ] || [ "${{ inputs.prerelease }}" = true ] && flags="$flags --prerelease"
+          [ "${{ inputs.draft }}" = true ] && flags="$flags --draft"
+          gh release create "$TAG" "${{ steps.zip.outputs.zip }}" --target "$GITHUB_SHA" --title "Namco System 11 $TAG" --notes-file notes.md --generate-notes $flags
