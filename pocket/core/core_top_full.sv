@@ -385,12 +385,15 @@ module core_top (
 
     // ---- Core settings (interact.json): DIP1 Test, DIP2 Freeze, held Service button, CPU turbo ----
     reg [5:0] settings74 = 6'b001000;                    // [3] = diagnostic screen (default on during bring-up)
+    // With bridge_endian_little = 1 the host's setting values arrive byte-swapped (1 -> 32'h01000000), so take the value
+    // from every byte lane, as the PlayStation core does (values are below 256)
+    wire [7:0] set_val = bridge_wr_data[7:0] | bridge_wr_data[15:8] | bridge_wr_data[23:16] | bridge_wr_data[31:24];
     always @(posedge clk_74a) if (bridge_wr) begin
-        if (bridge_addr == 32'h50000000) settings74[0] <= bridge_wr_data[0];
-        if (bridge_addr == 32'h50000004) settings74[1] <= bridge_wr_data[0];
-        if (bridge_addr == 32'h50000008) settings74[2] <= bridge_wr_data[0];
-        if (bridge_addr == 32'h5000000C) settings74[3] <= bridge_wr_data[0];
-        if (bridge_addr == 32'h50000010) settings74[5:4] <= bridge_wr_data[1:0];   // CPU turbo -> status[80:79] (0 off, 1 mem, 3 mem + compute)
+        if (bridge_addr == 32'h50000000) settings74[0] <= set_val[0];
+        if (bridge_addr == 32'h50000004) settings74[1] <= set_val[0];
+        if (bridge_addr == 32'h50000008) settings74[2] <= set_val[0];
+        if (bridge_addr == 32'h5000000C) settings74[3] <= set_val[0];
+        if (bridge_addr == 32'h50000010) settings74[5:4] <= set_val[1:0];   // CPU turbo -> status[80:79] (0 off, 1 mem, 3 mem + compute)
     end
     wire [5:0] settings;
     synch_3 #(.WIDTH(6)) s_set (settings74, settings, clk1x);
