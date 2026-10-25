@@ -46,7 +46,7 @@
         "persist": true,
         "writeonly": true,
         "address": "0x5000000C",
-        "defaultval": 1,
+        "defaultval": 0,
         "value": 1,
         "value_off": 0
       },

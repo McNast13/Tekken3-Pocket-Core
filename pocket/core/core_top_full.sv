@@ -384,7 +384,7 @@ module core_top (
     always @(posedge clk_74a) ee_shadow_q <= ee_shadow[bridge_addr[11:2]];
 
     // ---- Core settings (interact.json): DIP1 Test, DIP2 Freeze, held Service button, CPU turbo ----
-    reg [5:0] settings74 = 6'b001000;                    // [3] = diagnostic screen (default on during bring-up)
+    reg [5:0] settings74 = 6'b000000;                    // [3] = diagnostic screen (off; diagnostic builds force it with S11_FORCE_DIAG)
     // With bridge_endian_little = 1 the host's setting values arrive byte-swapped (1 -> 32'h01000000), so take the value
     // from every byte lane, as the PlayStation core does (values are below 256)
     wire [7:0] set_val = bridge_wr_data[7:0] | bridge_wr_data[15:8] | bridge_wr_data[23:16] | bridge_wr_data[31:24];
