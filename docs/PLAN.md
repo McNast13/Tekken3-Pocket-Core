@@ -55,12 +55,13 @@ About 44.5 MB of the 64 MB SDRAM. The PSRAMs stay dedicated to VRAM, as on Syste
    System 11 core only just meets timing at 67.7 MHz. Plan: keep 33.8688 MHz and recover throughput with PSX_MiSTer's turbo modes
    (`TURBO_MEM`, `TURBO_COMP`; `TURBO_CACHE` stays off, as the System 11 author found it corrupts reads). Target: game work must
    finish about 1.42x (48 / 33.87) faster than on an unturboed core.
-2. **H8/3002 CPU.** No open-source H8/300H HDL core was found. Closest: `rgwan/chimera` (H8/300, Python HDL). Expect to write one
-   and check it against MAME's `h83002` in simulation, as was done for the C352 on System 11.
+2. **H8/3002 CPU.** No open-source H8/300H HDL core was found. Closest: `rgwan/chimera` (H8/300, Python HDL). With no upstream
+   source coming, we write one and check it against MAME's `h83002` in simulation, as was done for the C352 on System 11.
 3. **FPGA area.** System 11 uses about 18,070 of 18,480 ALMs. System 12 swaps the C76 (M37702) for the H8 and adds banking and
    2 MB VRAM addressing. MDEC must stay (the attract FMV uses it); the C76 and its 512 B RAM go.
 4. **No upstream source.** XelaNotPu's SYSTEM12 MiSTer core runs Tekken 3 but is not published
-   (github.com/XelaNotPu/SYSTEM12_MiSTer holds only a README). Their System 11 core was published later under GPL-2.0.
+   (github.com/XelaNotPu/SYSTEM12_MiSTer holds only a README). As of 2026-11-06 they will not publish it for now, so this
+   port is built without it: every System 12 part (H8, banking, memory map) comes from MAME and our own HDL.
 
 ## Steps
 
@@ -71,6 +72,6 @@ About 44.5 MB of the 64 MB SDRAM. The PSRAMs stay dedicated to VRAM, as on Syste
    ~22% of the instructions, so the game already uses most of the System 11 CPU. Result: the busy-clock ratio between turbo off and on.
 2. **MAME profile of Tekken 3** (needs the `tekken3` romset in `roms/`): CPU load per frame (vsync wait loop, as above), MDEC use,
    H8 <-> MIPS shared-RAM protocol, bank switching pattern.
-3. **Ask XelaNotPu** about publishing the SYSTEM12 source.
-4. **H8/300H core** in simulation against MAME, if no source appears.
-5. Core tree: System 11 tree + System 12 memory map, banking, 2 MB VRAM, H8 in place of the C76.
+3. **H8/300H core** (needed: no upstream source). Write it and check it in simulation against MAME's `h83002`, as was done for
+   the C352 on System 11. Starting points: MAME `h8` CPU sources, `rgwan/chimera` (H8/300 only).
+4. **Core tree:** System 11 tree + System 12 memory map, banking, 2 MB VRAM, H8 in place of the C76.
