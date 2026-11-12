@@ -51,6 +51,9 @@ About 44.5 MB of the 64 MB SDRAM. The PSRAMs stay dedicated to VRAM, as on Syste
 
 ## Open problems
 
+Updated by the paper study of 2026-11-07, [STUDY.md](STUDY.md): measured H8 use, the fit arithmetic against System 11 v0.2.2,
+and the go/no-go gates.
+
 1. **CPU speed.** A 48-50 MHz CPU would need the core's 2x clock near 100 MHz. On the Pocket's slowest-grade Cyclone V, the
    System 11 core only just meets timing at 67.7 MHz. Plan: keep 33.8688 MHz and recover throughput with PSX_MiSTer's turbo modes
    (`TURBO_MEM`, `TURBO_COMP`; `TURBO_CACHE` stays off, as the System 11 author found it corrupts reads). Target: game work must
@@ -62,6 +65,29 @@ About 44.5 MB of the 64 MB SDRAM. The PSRAMs stay dedicated to VRAM, as on Syste
 4. **No upstream source.** XelaNotPu's SYSTEM12 MiSTer core runs Tekken 3 but is not published
    (github.com/XelaNotPu/SYSTEM12_MiSTer holds only a README). As of 2026-11-06 they will not publish it for now, so this
    port is built without it: every System 12 part (H8, banking, memory map) comes from MAME and our own HDL.
+
+## Likelihood of success (2026-11-07)
+
+Judgement calls, not measurements: the speed test (step 1) and a fit probe will replace them with numbers.
+
+- **Playable, with some slowdown in heavy scenes:** about one in three.
+- **Full speed throughout:** about one in six.
+
+| Hurdle | Chance it is cleared | Why |
+|---|---|---|
+| CPU speed: turbo modes give the ~1.45x needed | 25-35% | `TURBO_MEM` and `TURBO_COMP` cut memory and arithmetic delays, which usually gains less than 1.45x on a CPU already 88% busy. Reworking the CPU is possible (MIRLO 64 runs a MIPS at 93.75 MHz on this chip) but a big job |
+| CPU speed: enough for "playable, some slowdown" | 60-70% | The game waits for vsync, so a slow CPU drops frames in heavy moments instead of crashing |
+| Fit: the H8 and System 12 parts in ~2,350 ALMs | 40-50% | Best case just fits; the likely case needs a few hundred to 1,500 ALMs of cuts from a design already squeezed hard |
+| H8/300H core written and working | ~80%, given time | No unknowns, and MAME is an exact reference to test against. Weeks of work, like the C352 |
+| The rest: 2 MB VRAM, bank switching, memory | ~90% | Small changes; the memory fits |
+
+The hurdles mostly stack. Speed and fit also compete: any extra CPU work costs ALMs we don't have.
+
+**How the speed test changes this:**
+- About 1.4x or more from the turbo modes roughly doubles the full-speed chance.
+- Under 1.2x: stop or pause, unless noticeable slowdown is acceptable.
+
+Both deciding tests cost about an evening each, so they come before the H8 core. Details in [STUDY.md](STUDY.md).
 
 ## Steps
 

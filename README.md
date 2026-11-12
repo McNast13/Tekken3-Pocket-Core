@@ -12,6 +12,7 @@ Tekken 3 versions use the same one (M8F2F board, KC006 keycus) and MAME runs the
 game-specific hardware. One fixed memory map keeps the core small and the testing focused.
 
 See [docs/PLAN.md](docs/PLAN.md) for the hardware, the open problems and the plan.
+[docs/STUDY.md](docs/STUDY.md) (2026-11-07) is the latest paper study: whether it can fit, and the two tests that decide it.
 
 On the Pocket the core is **Tekken 3** (`McNast13.Tekken3`, platform `tekken3`) under openFPGA > Arcade, separate from the
 System 11 core. Internal build names (`s11full`, `s11_*` variants) still carry the System 11 prefix of the code they come from.
