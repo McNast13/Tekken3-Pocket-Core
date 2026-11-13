@@ -147,3 +147,58 @@ This core is already built on it: the CPU, GPU, GTE, MDEC and DMA come from open
 4. **Only after 1 and 2 pass:** write the H8/300H core and test it against MAME, then the System 12 memory map.
 
 Gates 1 and 2 cost an evening each. The H8 core is weeks of work, and should wait for both.
+
+## Results of the gates (2026-11-12)
+
+### Speed gate: failed for the cheap route
+
+Build t3turbo2 (seed 99, `s11_cpuload` probe, 18,201 ALMs) on the Pocket, Tekken (`tekkenac`) attract mode, one photo per
+CPU turbo setting. Decoded with a perspective-correct grid; the known rows (C76 first PC `00C030B0`, platform `14008000`,
+566,203 clocks per frame) match in all three photos.
+
+| CPU turbo | Busy clocks per frame | Instructions while busy | Instructions per busy clock |
+|---|---|---|---|
+| Off | 412,609 (73%) | 194,518 | 0.471 |
+| Memory | 325,628 (58%) | 155,863 | 0.479 |
+| Memory + compute | 485,742 (86%) | 225,647 | 0.465 |
+
+The turbo bits reach the CPU, DMA, GTE and memory mux (row 5 shows them), but the instructions per clock do not move:
+**about 1.00-1.02x, against the ~1.45x needed.** Each photo averages a different 4-second stretch of attract mode, so
+the busy percentages differ; the per-clock rate does not depend on the scene. At about 0.47 instructions per clock the
+CPU manages ~266k instructions a frame against Tekken 3's ~363k (MAME, approximate): roughly 70-75% speed in heavy
+fights. Full speed needs a faster CPU (MIRLO 64's approach), which is the next step if the fit allows it.
+
+### GPU command trace (MAME, `tools/mame/gpu_cmds.lua`)
+
+Every GP0 command, from CPU writes and DMA channel 2 (linked lists walked in RAM, 0 nodes ending mid-command), over
+300 s of attract mode and 300 s of a game started with a coin:
+
+| | Attract | Game |
+|---|---|---|
+| Polygons | 12.1 M | 13.5 M |
+| Rectangles | 546 k | 750 k |
+| Lines (`gpu_line`, 494 ALMs) | **0** | **0** |
+| VRAM -> CPU reads (`gpu_vram2cpu`, 113 ALMs) | **0** | **0** |
+| VRAM fill, copy, CPU -> VRAM | used | used |
+
+Also used: texture windows, dithering, blend modes 0-2, 4- and 8-bit textures, raw textures. Never seen: blend mode 3,
+15-bit textures. Not covered yet: the test menu, name entry, endings.
+
+### Fit probe: fitprobe1
+
+The C76's M37702 replaced by a stub of the same ports (`synth/pocket_probe/variants/fit_no_m37702.apply`) that keeps the
+C76 wrapper, shared RAM and C352 live (the C352 stays at 2,055 ALMs, so nothing was pruned). Seed 99, no probes.
+**16,152 of 18,480 ALMs: 2,328 free.** Worst timing: Slow 0C setup -0.588 ns (video clock), Fast 0C hold -0.018 ns;
+the clk2x VRAM miss of the full builds is gone at this density.
+
+| Room for the H8 and System 12 parts | ALMs |
+|---|---|
+| Free in fitprobe1 | 2,328 |
+| C76 wrapper left in the probe (SFRs, timers: replaced by the H8's peripherals) | 311 |
+| GPU lines and VRAM reads (unused by Tekken 3) | ~600 |
+| Other games' logic in `zn1_io` (protection chips, guns) | ~400 |
+| Diagnostic screen | ~140 |
+| **Total** | **~3,780** |
+
+Needed: 2,350-3,850. **The fit now looks likely**, with the H8 core's real size as the remaining unknown. The cuts
+after the first row are measured block sizes from the fit report, not yet a build.
