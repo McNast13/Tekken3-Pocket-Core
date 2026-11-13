@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Speed probe for the Tekken 3 CPU work: where do the MIPS's busy clocks go? (needs s11_bootbits.apply and S11_FORCE_DIAG;
+replaces s11_cpuload.apply, same idle test and windows, so the busy and advance figures compare with t3turbo2's).
+Idle = the MIPS is in Tekken (tekkenac)'s vsync wait loop 0x8004B5C4-0x8004B5D4. Every busy clk1x clock goes into one class:
+  advance  ce = 1 and no stall bit (the pipeline moves, about one instruction)
+  only one stall bit (cpu.vhd: stall = dmaStallCPU & stall4 & stall3 & stall2 & stall1):
+    s1 fetch   (stage 1: instruction cache miss / uncached fetch)
+    s2 decode  (stage 2: waiting for a late load result)
+    s3 execute (stage 3: mul/div, HI/LO, GTE)
+    s4 memory  (stage 4: data read or write on the bus)
+    dma        (DMA owns the bus)
+  multi    more than one stall bit at once
+  ce0      the CPU's clock enable is low
+Each is averaged per frame over a window of 256 vblank intervals (~4 s), in units of 16 clocks (16-bit fields), and stays on
+screen until the next window ends; a change of the turbo setting restarts the window.
+Rows shown on the diagnostic screen (PK_DBG2 bits):
+  1 [31:0]    = {TURBO_MEM, TURBO_COMP, 6'b0, windows completed [23:16], clocks per frame / 16 [15:0]}
+  5 [255:224] = {busy / 16, advance / 16}
+  7 [223:192] = {s1 fetch / 16, s2 decode / 16}
+  6 [191:160] = {s3 execute / 16, s4 memory / 16}
+  8 [159:128] = {dma / 16, multi / 16}
+  9 [127:96]  = {ce0 / 16, largest busy count in one frame / 16}
+Check: advance + s1 + s2 + s3 + s4 + dma + multi + ce0 = busy (to within rounding).
+Usage: s11_stallprobe.apply OUTDIR   (S11_PROBES, after pocket_emu.apply)
+"""
+import re, sys
+from pathlib import Path
+
+top = Path(sys.argv[1]) / "rtl/psx_top.vhd"
+t = top.read_text()
+m = re.search(r"   s11_boot_dbg <= \(.*?;\n(?=   dbg_reached_game <= s11_reached_game;)", t, flags=re.S)
+assert m, "s11_boot_dbg assignment not found (s11_bootbits.apply must be applied)"
+t = t[:m.start()] + """   -- s11_stallprobe.apply: MIPS busy clocks per frame by stall cause (tekkenac vsync wait loop = idle)
+   s11_stallprobe : process(clk1x)
+      type acc_t is array (0 to 8) of unsigned(27 downto 0);   -- 256 frames x 566k clocks < 2^28
+      type res_t is array (0 to 8) of unsigned(15 downto 0);
+      variable vbl_d : std_logic := '0';
+      variable turbo_d : std_logic_vector(1 downto 0) := "00";
+      variable idle : std_logic := '0';
+      variable k : integer range 0 to 8;
+      variable n_frm : unsigned(8 downto 0) := (others => '0');
+      variable n_win : unsigned(7 downto 0) := (others => '0');
+      variable c_busy, m_busy : unsigned(31 downto 0) := (others => '0');
+      variable s : acc_t := (others => (others => '0'));    -- 0 busy, 1 advance, 2 s1, 3 s2, 4 s3, 5 s4, 6 dma, 7 multi, 8 ce0
+      variable s_frm : unsigned(27 downto 0) := (others => '0');
+      variable r : res_t := (others => (others => '0'));
+      variable r_frm, r_max : unsigned(15 downto 0) := (others => '0');
+      variable st : std_logic_vector(4 downto 0);
+   begin
+      if rising_edge(clk1x) then
+         if unsigned(zn_dbg_mipspc) >= x"8004B5C4" and unsigned(zn_dbg_mipspc) <= x"8004B5D4" then idle := '1'; else idle := '0'; end if;
+         st := std_logic_vector(dbg_cpu_stall);
+         s_frm := s_frm + 1;
+         if idle = '0' then
+            c_busy := c_busy + 1;
+            s(0) := s(0) + 1;
+            if ce = '0' then k := 8;
+            else
+               case st is
+                  when "00000" => k := 1;
+                  when "00001" => k := 2;
+                  when "00010" => k := 3;
+                  when "00100" => k := 4;
+                  when "01000" => k := 5;
+                  when "10000" => k := 6;
+                  when others  => k := 7;
+               end case;
+            end if;
+            s(k) := s(k) + 1;
+         end if;
+         if (TURBO_MEM & TURBO_COMP) /= turbo_d then
+            n_frm := (others => '0'); m_busy := (others => '0'); c_busy := (others => '0');
+            s := (others => (others => '0')); s_frm := (others => '0');
+         elsif irq_VBLANK = '1' and vbl_d = '0' then
+            if c_busy > m_busy then m_busy := c_busy; end if;
+            c_busy := (others => '0');
+            n_frm := n_frm + 1;
+            if n_frm = 256 then
+               for i in 0 to 8 loop r(i) := s(i)(27 downto 12); end loop;   -- / 256 frames / 16
+               r_frm := s_frm(27 downto 12); r_max := m_busy(19 downto 4); n_win := n_win + 1;
+               n_frm := (others => '0'); m_busy := (others => '0');
+               s := (others => (others => '0')); s_frm := (others => '0');
+            end if;
+         end if;
+         turbo_d := TURBO_MEM & TURBO_COMP;
+         vbl_d := irq_VBLANK;
+         s11_boot_dbg <= x"00000000" &
+                         std_logic_vector(r(0)) & std_logic_vector(r(1)) &                       -- row 5
+                         std_logic_vector(r(2)) & std_logic_vector(r(3)) &                       -- row 7
+                         std_logic_vector(r(4)) & std_logic_vector(r(5)) &                       -- row 6
+                         std_logic_vector(r(6)) & std_logic_vector(r(7)) &                       -- row 8
+                         std_logic_vector(r(8)) & std_logic_vector(r_max) &                      -- row 9
+                         x"0000000000000000" &
+                         TURBO_MEM & TURBO_COMP & "000000" & std_logic_vector(n_win) & std_logic_vector(r_frm);   -- row 1
+      end if;
+   end process;
+""" + t[m.end():]
+top.write_text(t)
+print("s11_stallprobe applied")

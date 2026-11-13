@@ -168,6 +168,34 @@ the busy percentages differ; the per-clock rate does not depend on the scene. At
 CPU manages ~266k instructions a frame against Tekken 3's ~363k (MAME, approximate): roughly 70-75% speed in heavy
 fights. Full speed needs a faster CPU (MIRLO 64's approach), which is the next step if the fit allows it.
 
+### Where the CPU's clocks go: t3stall1 (2026-11-13)
+
+Probe `s11_stallprobe.apply` (replaces `s11_cpuload`, same idle test): every busy clk1x clock goes into one class by
+the CPU's stall bits (`stall = dmaStallCPU & stall4 & stall3 & stall2 & stall1`). Build t3stall1 (seed 99,
+`S11_POSEDGE_OUT`, `S11_FORCE_DIAG`, MDEC kept): 18,228 ALMs; timing setup -0.892 ns Slow 0C (video clock, inside the
+diagnostic screen's pixel path), clk2x setup -0.239 ns, clk3x hold -0.195 ns. Tekken (`tekkenac`) attract mode on the
+Pocket, one photo per turbo setting. Checks: rows 2-4 read `00C030B0`, `14008000`, `8004B5D0`; 566,192 clocks a frame;
+the classes add up to the busy total within one count of 16 in both photos.
+
+| Busy clocks per frame | Turbo off | Memory + compute |
+|---|---|---|
+| Busy | 219,872 | 204,688 |
+| Advance (instructions) | 97,456 (44%) | 97,680 (48%) |
+| Decode stall: waiting for a load result | **52,848 (24%)** | 44,320 (22%) |
+| Memory stage | 26,112 (12%) | 23,664 (12%) |
+| More than one stall at once | 25,152 (11%) | 23,312 (11%) |
+| Fetch (instruction cache) | 18,288 (8%) | 15,664 (8%) |
+| Execute (mul/div, GTE), DMA, clock enable low | 0 | 0 |
+
+- **Data loads, not instruction fetch, cost the most:** waiting for a load result, the memory stage and most of the
+  overlap class come to about 47% of busy clocks. Fetch is 8%. (The guess before this probe was fetch; it was wrong.)
+- Both photos ran the same work (~97.5k instructions), so they compare directly: the turbo saves 7% of clocks
+  (1.07x). The 1.00-1.02x of the speed gate compared different scenes.
+- With no load waits the same work would take ~1.9x fewer clocks. A data cache for main RAM (the PlayStation CPU has
+  none) could plausibly give the 1.45x Tekken 3 needs at 33.87 MHz.
+- Next: split the load waits by target (main RAM, scratchpad, ROM, I/O, GPU) and reads vs writes, to size what a
+  data cache can win, before designing one.
+
 ### GPU command trace (MAME, `tools/mame/gpu_cmds.lua`)
 
 Every GP0 command, from CPU writes and DMA channel 2 (linked lists walked in RAM, 0 nodes ending mid-command), over
