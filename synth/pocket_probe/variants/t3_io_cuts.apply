@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""Tekken 3 cut: drop the System 11 games' logic from zn1_io: the KEYCUS protection chips (C406/C409/C43x, rom8_64
+bank decode) and the gun board (Point Blank 2 / Gunbarl). Tekken 3 has neither (docs/feedback rule: the core is
+Tekken 3 only). The ports stay; inside the architecture keycus_id reads as x"00" (no chip, the port's own default),
+s11_up as '0' and the gun counters as 0, so synthesis prunes the logic behind them.
+Usage: t3_io_cuts.apply OUTDIR   (S11_PROBES, after pocket_emu.apply)
+"""
+import re
+import sys
+from pathlib import Path
+
+f = Path(sys.argv[1]) / "rtl/zn1_io.vhd"
+t = f.read_text()
+head, sep, body = t.partition("architecture arch of zn1_io is")
+assert sep, "zn1_io architecture not found"
+names = {"keycus_id": "t3_keycus_id", "s11_up": "t3_s11_up",
+         "gun1_x": "t3_gun", "gun1_y": "t3_gun", "gun2_x": "t3_gun", "gun2_y": "t3_gun"}
+for old, new in names.items():
+    body, n = re.subn(rf"\b{old}\b", new, body)
+    assert n, old
+body = """
+   constant t3_keycus_id : std_logic_vector(7 downto 0) := x"00";
+   constant t3_s11_up    : std_logic := '0';
+   constant t3_gun       : std_logic_vector(15 downto 0) := (others => '0');""" + body
+f.write_text(head + sep + body)
+print("t3_io_cuts applied")

@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Tekken 3 cut: drop the GPU line drawer (~484 ALMs) and the VRAM -> CPU reader (~107 ALMs).
+Tekken 3 never sends either command (docs/STUDY.md, GPU command trace: attract, game, test menu, name entry).
+Each block keeps its ports; the stub answers its command word with done on the next clock, so a stray command cannot
+hang the GPU (its parameter words would then be read as commands, which is harmless garbage at worst). The line stub
+leaves the shared dividers and the recip unit idle (start, dividend and divisor are ORed with gpu_poly's in gpu.vhd).
+The VRAM read FIFO reads as empty and all ones, as an idle PlayStation GPU returns.
+Usage: t3_gpu_cuts.apply OUTDIR   (S11_PROBES, after pocket_emu.apply)
+"""
+import sys
+from pathlib import Path
+
+rtl = Path(sys.argv[1]) / "rtl"
+
+
+def stub(name, opcode, body):
+    f = rtl / f"{name}.vhd"
+    t = f.read_text()
+    i = t.index(f"architecture arch of {name} is")
+    f.write_text(t[:i] + f"""architecture t3stub of {name} is
+begin
+   process (clk2x)
+   begin
+      if rising_edge(clk2x) then
+         done <= '0';
+         if (reset = '0' and ce = '1' and proc_idle = '1' and fifo_Valid = '1' and fifo_data(31 downto 29) = "{opcode}") then
+            done <= '1';
+         end if;
+      end if;
+   end process;
+   requestFifo       <= '0';
+   CmdDone           <= '0';
+   requestVRAMEnable <= '0';
+   requestVRAMXPos   <= (others => '0');
+   requestVRAMYPos   <= (others => '0');
+   requestVRAMSize   <= (others => '0');
+   vramLineEna       <= '0';
+   vramLineAddr      <= (others => '0');
+{body}end architecture;
+""")
+
+
+stub("gpu_line", "010", """   error                <= '0';
+   recipStart           <= '0';
+   recipDivisor         <= (others => '0');
+   gradValid            <= '0';
+   gradN                <= (others => '0');
+   gradIdx              <= (others => '0');
+   pipeline_new         <= '0';
+   pipeline_transparent <= '0';
+   pipeline_x           <= (others => '0');
+   pipeline_y           <= (others => '0');
+   pipeline_cr          <= (others => '0');
+   pipeline_cg          <= (others => '0');
+   pipeline_cb          <= (others => '0');
+   div1.start <= '0'; div1.dividend <= (others => '0'); div1.divisor <= (others => '0');
+   div2.start <= '0'; div2.dividend <= (others => '0'); div2.divisor <= (others => '0');
+   div3.start <= '0'; div3.dividend <= (others => '0'); div3.divisor <= (others => '0');
+   div4.start <= '0'; div4.dividend <= (others => '0'); div4.divisor <= (others => '0');
+   div5.start <= '0'; div5.dividend <= (others => '0'); div5.divisor <= (others => '0');
+   div6.start <= '0'; div6.dividend <= (others => '0'); div6.divisor <= (others => '0');
+""")
+stub("gpu_vram2cpu", "110", """   Fifo_Dout  <= (others => '1');
+   Fifo_Empty <= '1';
+   Fifo_ready <= '1';
+""")
+print("t3_gpu_cuts applied")

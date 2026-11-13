@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Fit probe for the Tekken 3 cut build: replaces the whole C76 (wrapper: SFRs, timers, ADC, BIOS RAM; and its M37702)
+with a stub of the same ports, one level up from fit_no_m37702.apply. On System 12 the H8/3002's own peripherals take
+the wrapper's place, so this measures the room left for the H8. The stub is a 24-bit LFSR that mixes in ext_din,
+ext_ready, the interrupt inputs and the BIOS download, and drives the bus outputs, so the shared RAM and the C352
+behind it stay live and are not pruned (the C352 should stay at ~2,055 ALMs; check the fit report).
+Not a working core: sound and the C76 side are dead. Measurement only.
+Usage: t3_c76_stub.apply OUTDIR   (S11_PROBES, after pocket_emu.apply)
+"""
+import sys
+from pathlib import Path
+
+f = Path(sys.argv[1]) / "rtl/c76.vhd"
+t = f.read_text()
+i = t.index("architecture arch of c76 is")
+f.write_text(t[:i] + """architecture stub of c76 is
+   signal lfsr : std_logic_vector(23 downto 0) := x"000001";
+begin
+   process (clk)
+      variable fb : std_logic;
+   begin
+      if rising_edge(clk) then
+         if reset = '1' then
+            lfsr <= x"000001";
+         elsif bios_wr = '1' then
+            lfsr(7 downto 0) <= lfsr(7 downto 0) xor bios_din xor bios_addr(7 downto 0);
+         elsif ce = '1' and ext_ready = '1' then
+            fb := lfsr(23) xor lfsr(22) xor lfsr(21) xor lfsr(16) xor irq0 xor irq1 xor irq2
+                  xor ext_din(0) xor ext_din(3) xor ext_din(5) xor ext_din(7);
+            lfsr <= lfsr(22 downto 0) & fb;
+            lfsr(8 downto 1) <= lfsr(7 downto 0) xor ext_din;
+         end if;
+      end if;
+   end process;
+   ext_addr   <= lfsr;
+   ext_dout   <= lfsr(15 downto 8);
+   ext_rd     <= lfsr(3);
+   ext_wr     <= lfsr(4) and lfsr(9);
+   dbg_pc     <= lfsr;
+   dbg_opcode <= lfsr(7 downto 0);
+   dbg_valid  <= lfsr(5);
+   dbg_halted <= '0';
+   dbg_x      <= lfsr(15 downto 0);
+   dbg_ram80  <= (others => '0');
+   dbg_ram83  <= (others => '0');
+end architecture;
+""")
+print("t3_c76_stub applied")

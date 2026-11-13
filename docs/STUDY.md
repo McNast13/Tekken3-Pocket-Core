@@ -219,3 +219,25 @@ the clk2x VRAM miss of the full builds is gone at this density.
 
 Needed: 2,350-3,850. **The fit now looks likely**, with the H8 core's real size as the remaining unknown. The cuts
 after the first row are measured block sizes from the fit report, not yet a build.
+
+### Cut build: t3cut1 (2026-11-13)
+
+The cuts above as a build: `t3_gpu_cuts` (gpu_line and gpu_vram2cpu stubbed; each answers its command with done),
+`t3_io_cuts` (zn1_io's KEYCUS chips and gun board tied off), `t3_c76_stub` (the whole C76, wrapper and M37702, as an
+LFSR stub) and `S11_NO_DIAG` (ported from System 11). Seed 99, MDEC kept, as fitprobe1. Measurement only: no sound.
+**14,049 of 18,480 ALMs: 4,431 free.** Timing met in all four models, setup and hold: worst setup Slow 0C +0.269 ns
+(clk2x), worst hold Fast 0C +0.073 ns.
+
+| Block | fitprobe1 | t3cut1 | Change |
+|---|---|---|---|
+| GPU (line drawer 484, VRAM read 107, the rest packing) | 4,568 | 3,764 | -805 |
+| C76 (wrapper and stubbed CPU) | 328 | ~20 | -308 |
+| zn1_io | 564 | 117 | -448 |
+| Diagnostic screen and its flags | ~210 | 0 | ~-210 |
+| C352 | 2,055 | 1,803 | **-252: a stub artefact, not room** |
+| Everything else | | | about -80 (placement noise) |
+
+The C76 stub feeds the C352 less than the real C76 does, so Quartus trimmed 252 ALMs of it that the real core needs.
+**Real room: about 4,180 ALMs** (4,431 - 252), against 2,350-3,850 needed for the H8 and System 12 parts. Not counted in
+"needed": any extra logic to make the CPU faster (the speed gate failed), and a few hundred ALMs to spare for timing.
+Next unknown: the H8/300H datapath synthesised alone.
