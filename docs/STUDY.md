@@ -135,6 +135,24 @@ This core is already built on it: the CPU, GPU, GTE, MDEC and DMA come from open
   path (`psx_vram_x3.sv`, `psx_vram_psram.sv`). Worth checking for area or timing gains during the fit gate, since our VRAM
   path is the known clk2x timing miss.
 
+## 7. Tekken 3 without its H8 (MAME, 2026-11-13)
+
+Question: can the main CPU run Tekken 3 on the Pocket before the H8 core exists, so that speed work is measured on the
+real game instead of Tekken 1? `tools/mame/h8_halt.lua` parks the H8 (its reset vector points at a `bra .` loop) and,
+with `H8_FAKE=1`, answers the main CPU's handshakes in its place. `tools/mame/h8_handshake.lua` logs the shared-RAM
+traffic that showed what to answer.
+
+- **H8 parked, nothing else:** the main CPU never gets past start-up. It writes `0x3163` to shared RAM `0x3002` and
+  waits (in a frame-counted loop at `0x801F20D8`) for the H8's reply; the real H8 writes `0x7601` there one frame later.
+- **Then:** loops at `0x801F7F84` and `0x801F916C` wait for the H8 to clear command words `0x30F0`/`0x306A` and
+  `0x3078` (commands `0x3166`/`0x3167`). The real H8 clears them every frame.
+- **Fake H8 (reply `0x7601` to `0x3163`; clear `0x30F0`, `0x306A`, `0x3078` every frame):** the full attract mode runs,
+  with 7,293,431 polygons in 200 s, the same as with the real H8. The one difference is a "FIRST POWER ON" screen at
+  start-up (the H8 normally passes on the RTC and settings), which delays attract by a few seconds.
+
+So a Tekken 3 core can boot and run attract mode, silent and without controls, with a tiny fake H8 in place of the
+real one. That makes the real game available for speed measurements on the Pocket long before the H8 core is done.
+
 ## Recommended next steps (the go/no-go gates)
 
 1. **Speed gate (on the Pocket):** rebuild t3turbo2 and take the three turbo photos (Off, Memory, Memory + compute) in
