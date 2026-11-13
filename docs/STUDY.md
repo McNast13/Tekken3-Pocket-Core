@@ -241,3 +241,29 @@ The C76 stub feeds the C352 less than the real C76 does, so Quartus trimmed 252 
 **Real room: about 4,180 ALMs** (4,431 - 252), against 2,350-3,850 needed for the H8 and System 12 parts. Not counted in
 "needed": any extra logic to make the CPU faster (the speed gate failed), and a few hundred ALMs to spare for timing.
 Next unknown: the H8/300H datapath synthesised alone.
+
+### H8/300H sizing model (2026-11-13)
+
+`synth/h8_size/` (`run.sh`): not a working CPU but its full-width datapath, built alone on the Pocket's device: ER0-ER7
+with byte/word/long lanes (2 read ports, 1 write port), 32-bit ALU with H/N/Z/V/C at all three sizes, DAA/DAS,
+EXTU/EXTS, shifts and rotates, the bit unit, MULXU/MULXS (1 DSP), iterative DIVXU/DIVXS, every addressing mode's address
+adder, PC with the 16 branch conditions, CCR, a 32-bit memory data register, five instruction words. Control is a
+decode table and a 1024 x 72 microcode store, both writable RAMs so Quartus cannot simplify through their contents.
+Quartus removed one register (`div_rem[32]`); the 523 registers match the model.
+
+| | |
+|---|---|
+| ALMs | **1,297** |
+| Block RAM | 13 M10K (114 Kbit: microcode and decode table); t3cut1 has 98 free |
+| DSP | 1 |
+| Timing at 33.8688 MHz (`clk_1x`) | met in all four models; worst setup +6.351 ns (Slow 0C), hold +0.170 ns (Fast 0C); Fmax 43 MHz |
+
+Below the 1,800-2,800 estimate because that came from the M37702, whose decoder is hardwired logic; here the decode
+and control sit in block RAM. Not in the model, so add an allowance of about 150-350: LDM/STM's register counter,
+EEPMOV, TRAPA/RTE/SLEEP, interrupt priorities and control modes, and the bus state machine (wait states, 8-bit areas).
+**H8 CPU: about 1,450-1,650 ALMs.** The microcoded design has 2 clocks per H8 state at `clk_1x`; whether that is enough
+for every instruction's real timing is a question for the core itself.
+
+Updated fit: CPU 1,450-1,650 + peripherals 450-750 (not yet sized) + System 12 glue 100-300 = **2,000-2,700 needed**
+against **~4,180 room**: about 1,480-2,180 left before any CPU speed work. Next unknown: the peripherals (timers,
+SCI1, ports, A/D, interrupt controller).
