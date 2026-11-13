@@ -267,3 +267,24 @@ for every instruction's real timing is a question for the core itself.
 Updated fit: CPU 1,450-1,650 + peripherals 450-750 (not yet sized) + System 12 glue 100-300 = **2,000-2,700 needed**
 against **~4,180 room**: about 1,480-2,180 left before any CPU speed work. Next unknown: the peripherals (timers,
 SCI1, ports, A/D, interrupt controller).
+
+### H8/3002 peripheral sizing model (2026-11-13)
+
+`synth/h8_size/h8_periph.vhd`: the blocks Tekken 3 uses (`out/h8_io.log`) at full width: ITU channels 0-3 (TCNT, GRA,
+GRB, TCR, TIOR, TIER, TSR; clock select, clear on compare, compare and overflow flags), SCI1 in clocked mode (baud
+generator, shift registers, SSR), ports 7/8/9/A/B, the A/D converter (4 result registers, conversion timer, scan mode),
+the interrupt controller (IRQ0-5, IPRA/IPRB, vector encoder over 23 sources), the bus controller (8/16-bit areas, wait
+states) and the 512 B on-chip RAM. Left out, as Tekken 3 never touches them: DMA controller, watchdog, DRAM refresh,
+SCI0, ITU channel 4, PWM and pin functions. `h8_top.vhd` wires it to the CPU model. `run.sh h8_periph` / `run.sh h8_top`.
+
+| Build | ALMs | Block RAM | DSP | Timing at 33.8688 MHz |
+|---|---|---|---|---|
+| Peripherals alone | 757 | 1 | 0 | met, all four models (worst setup +8.329 ns, hold +0.165 ns) |
+| CPU + peripherals (`h8_top`) | **1,968** (CPU 1,182, peripherals 642, glue 143) | 14 | 1 | met, all four models (worst setup +4.291 ns Slow 85C, hold +0.169 ns Fast 0C) |
+
+Removed in synthesis: 6 peripheral flag bits the model never sets (SCI's MPB/ORER/FER, ISR 6-7) and the divider's
+top bit; nothing else. The peripherals are at the top of the 450-750 estimate.
+
+**Whole H8: about 2,170-2,470 ALMs** (1,968 measured, plus 150-350 for what the CPU model leaves out and about 50-150
+for peripheral detail). With the System 12 glue (100-300): **2,270-2,770 needed against ~4,180 room, leaving about
+1,400-1,900** for CPU speed work and timing margin. All of it is still models, not working blocks.
