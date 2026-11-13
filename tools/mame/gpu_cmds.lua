@@ -16,6 +16,21 @@ local rem, mode, poly_g, a0wh = 0, nil, false, 0
 local persec = { line = 0, vram2cpu = 0, poly = 0, rect = 0 }
 local words, lists, blocks, nodes, desync = 0, 0, 0, 0, 0
 
+-- GPU_INPUTS="frame:[port=]field[:hold[:value]],..." presses MAME input fields by name (hold defaults to 6 frames, value
+-- to 1), e.g. "1:DSW=Service Mode:999999:0" boots into the test menu, "900:P1 Down" moves the cursor.
+-- GPU_SNAP=n saves a screenshot every n frames (to MAME's snap folder) to see which screen the counts belong to.
+local inputs = {}
+for item in (os.getenv("GPU_INPUTS") or ""):gmatch("[^,]+") do
+  local at, fld, hold, value = item:match("^(%d+):([^:]+):?(%d*):?(%d*)$")
+  if at then
+    local port, name = fld:match("^(:?[%w_]+)=(.+)$")
+    if port and port:sub(1, 1) ~= ":" then port = ":" .. port end
+    inputs[#inputs + 1] = { at = tonumber(at), port = port, name = name or fld,
+                            hold = tonumber(hold) or 6, value = tonumber(value) or 1 }
+  end
+end
+local snap = tonumber(os.getenv("GPU_SNAP") or "0")
+
 local function cmdlen(op)
   if op >= 0x20 and op <= 0x3f then
     local nv = (op & 0x08) ~= 0 and 4 or 3
@@ -122,6 +137,19 @@ emu.register_frame_done(function()
       for name, fld in pairs(port.fields) do if name == "Coin 1" or name == "1 Player Start" then fld:set_value(0) end end
     end
   end
+  for _, ev in ipairs(inputs) do
+    if f == ev.at or f == ev.at + ev.hold then
+      for tag, port in pairs(manager.machine.ioport.ports) do
+        if ev.port == nil or tag == ev.port then
+          local fld = port.fields[ev.name]
+          if fld and fld.type_class == "dipswitch" then
+            if f == ev.at then fld.user_value = ev.value end               -- DIP switches take a setting, not a press
+          elseif fld then fld:set_value((f == ev.at) and ev.value or fld.defvalue) end
+        end
+      end
+    end
+  end
+  if snap > 0 and f % snap == 0 then manager.machine.video:snapshot() end
   if f % 60 == 0 then
     print(string.format("f%d poly=%d rect=%d line=%d vram2cpu=%d", f, persec.poly, persec.rect, persec.line, persec.vram2cpu))
     persec = { line = 0, vram2cpu = 0, poly = 0, rect = 0 }

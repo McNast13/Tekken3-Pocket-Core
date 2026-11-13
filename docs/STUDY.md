@@ -182,7 +182,24 @@ Every GP0 command, from CPU writes and DMA channel 2 (linked lists walked in RAM
 | VRAM fill, copy, CPU -> VRAM | used | used |
 
 Also used: texture windows, dithering, blend modes 0-2, 4- and 8-bit textures, raw textures. Never seen: blend mode 3,
-15-bit textures. Not covered yet: the test menu, name entry, endings.
+15-bit textures.
+
+Second pass (2026-11-13), all headless with scripted inputs (`GPU_INPUTS`, `GPU_SNAP`) and screenshots to confirm each
+screen was really reached:
+
+| Run | Covers | Lines | VRAM -> CPU |
+|---|---|---|---|
+| Test menu | main menu, Display Test (Color Bar, Convergence, Diagonal), Switch Test with presses, Sound Test, Game Options (all items), Coin Options, A.D.S. pages, Backup Data Clear menu | **0** | **0** |
+| 1P game to game over (15 min) | stage 1 lost, continue countdown, GAME OVER, back to attract | **0** | **0** |
+| Attract (20 min, 71,792 frames) | several full cycles: intro movies, demo fights, title, Character Time Record and VS Game Wins Record tables | **0** | **0** |
+| VS streak (12 min) | 4-win VS streak, streak ended by the challenger, name entry ("4 WINS A", shown in the continue screen), 1P continue | **0** | **0** |
+
+Still never seen: blend mode 3, 15-bit textures. Not covered: the endings (need the game beaten). Even the test menu's
+grid and diagonal patterns are polygons, so `gpu_line` and `gpu_vram2cpu` can go.
+
+Test menu controls (for scripts): JVS test button (`JVS_SYSTEM` "Service Mode") opens it once the game is running (the
+DIP "Service Mode" does nothing); P1 Up/Down move, P1 Button 1 selects; Start exits most pages, Buttons 3+4 exit Switch
+Test; in Display Test, Button 1 steps the pattern.
 
 ### Fit probe: fitprobe1
 
