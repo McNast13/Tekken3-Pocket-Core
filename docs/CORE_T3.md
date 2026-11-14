@@ -104,3 +104,7 @@ Data cache soak test (t3fps1, 2026-11-14): 30 minutes of attract mode with the d
 diagnostic screens at the end: 213 game frames per window (50 fps, CPU busy 84%) and 256 (60 fps, a light scene, CPU in
 the vsync wait loop), so the main loop was still running normally. The System 11 read corruption that made the upstream
 core turn the cache off has not shown up on Tekken 3 so far.
+
+MDEC (movie decoder): Tekken 3 uses it, so it stays (619 ALMs). MAME, 2026-11-14: 1,330 MDEC decode commands (0x3Axxxxxx
+at 0x1F801820) and as many DMA channel 0 and 1 starts in 20 minutes of attract mode, 532 in a coin-started game; they come
+in bursts (movie clips), not every frame.
