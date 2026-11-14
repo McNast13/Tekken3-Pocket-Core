@@ -71,6 +71,10 @@
           {
             "value": 3,
             "name": "Memory + compute"
+          },
+          {
+            "value": 2,
+            "name": "Memory + compute + data cache"
           }
         ]
       }

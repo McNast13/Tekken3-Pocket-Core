@@ -99,3 +99,8 @@ it runs at exactly 30; the memory and compute settings (+8%) do not change that.
 to 5% of busy clocks and memory-stage stalls from 16% to 8%. With it, the largest remaining stall is instruction fetch
 (15%). Open: a long soak test of the data cache (it was turned off on System 11 for read corruption), then the remaining
 10-25% in heavy scenes.
+
+Data cache soak test (t3fps1, 2026-11-14): 30 minutes of attract mode with the data cache on, no glitches seen. Two
+diagnostic screens at the end: 213 game frames per window (50 fps, CPU busy 84%) and 256 (60 fps, a light scene, CPU in
+the vsync wait loop), so the main loop was still running normally. The System 11 read corruption that made the upstream
+core turn the cache off has not shown up on Tekken 3 so far.
