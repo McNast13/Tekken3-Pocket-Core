@@ -1,7 +1,8 @@
 # Tekken 3 (Namco System 12) for Analogue Pocket (openFPGA)
 
-**Status:** feasibility stage. There is no Tekken 3 code yet: the repo builds the System 11 core it started from, with probes
-for the speed and fit tests that decide whether Tekken 3 can work (see [docs/STUDY.md](docs/STUDY.md)).
+**Status:** early development. Tekken 3's attract mode runs on the Pocket, but slowly, with no sound and no controls. The
+sound/input CPU (H8) is faked for now, and the game reaches full speed only some of the time, with an experimental data cache.
+Not playable yet; see [docs/CORE_T3.md](docs/CORE_T3.md) for progress.
 
 A single-game core for **Tekken 3** on the Analogue Pocket, following the
 [Namco System 11 port](https://github.com/McNast13/NamcoSystem11-Pocket). System 12 is a faster System 11
@@ -35,6 +36,10 @@ This port is being built with heavy use of AI, and we want to be upfront about t
 - **Limits.** AI-written hardware description code can be wrong in ways that compile and fit cleanly. The checks here are
   simulation and testing on hardware, not an expert line-by-line review, so treat the core as experimental. Bug reports and
   reviews from people who know these systems are very welcome.
+
+## Support
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/mcnast13)
 
 ## Licence
 
