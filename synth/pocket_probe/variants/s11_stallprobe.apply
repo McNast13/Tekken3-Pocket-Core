@@ -21,8 +21,10 @@ Rows shown on the diagnostic screen (PK_DBG2 bits):
   7 [223:192] = {s1 fetch / 16, s2 decode / 16}
   6 [191:160] = {s3 execute / 16, s4 memory / 16}
   8 [159:128] = {dma / 16, multi / 16}
-  9 [127:96]  = {ce0 / 16, largest busy count in one frame / 16}
-Check: advance + s1 + s2 + s3 + s4 + dma + multi + ce0 = busy (to within rounding).
+  9 [127:96]  = {game frames in the window (vsync-loop exits; 256 = full speed; tekken3 only), largest busy count in one frame / 16}
+Check: advance + s1 + s2 + s3 + s4 + dma + multi + ce0 = busy (to within rounding); ce0 is no longer shown (0 in every
+measurement so far: t3stall1, t3boot2). A game frame ends when the CPU leaves the vsync wait loop: Tekken 3 at PC 0x801BBC78
+(the instruction after the loop), 60 per second in MAME's attract mode (tools: scratch fps.lua, 2026-11-14).
 Usage: [STALL_GAME=tekken3] s11_stallprobe.apply OUTDIR   (S11_PROBES, after pocket_emu.apply)
 """
 import os, re, sys
@@ -48,10 +50,15 @@ t = t[:m.start()] + """   -- s11_stallprobe.apply: MIPS busy clocks per frame by
       variable r : res_t := (others => (others => '0'));
       variable r_frm, r_max : unsigned(15 downto 0) := (others => '0');
       variable st : std_logic_vector(4 downto 0);
+      variable at_exit, at_exit_d : boolean := false;
+      variable gf, r_gf : unsigned(15 downto 0) := (others => '0');   -- game frames: vsync-loop exits
    begin
       if rising_edge(clk1x) then
          if IDLE_TEST then idle := '1'; else idle := '0'; end if;
          st := std_logic_vector(dbg_cpu_stall);
+         at_exit := GAME_FRAME_TEST;
+         if at_exit and not at_exit_d then gf := gf + 1; end if;
+         at_exit_d := at_exit;
          s_frm := s_frm + 1;
          if idle = '0' then
             c_busy := c_busy + 1;
@@ -71,7 +78,7 @@ t = t[:m.start()] + """   -- s11_stallprobe.apply: MIPS busy clocks per frame by
             s(k) := s(k) + 1;
          end if;
          if (TURBO_MEM & TURBO_COMP & TURBO_CACHE) /= turbo_d then
-            n_frm := (others => '0'); m_busy := (others => '0'); c_busy := (others => '0');
+            n_frm := (others => '0'); m_busy := (others => '0'); c_busy := (others => '0'); gf := (others => '0');
             s := (others => (others => '0')); s_frm := (others => '0');
          elsif irq_VBLANK = '1' and vbl_d = '0' then
             if c_busy > m_busy then m_busy := c_busy; end if;
@@ -79,8 +86,8 @@ t = t[:m.start()] + """   -- s11_stallprobe.apply: MIPS busy clocks per frame by
             n_frm := n_frm + 1;
             if n_frm = 256 then
                for i in 0 to 8 loop r(i) := s(i)(27 downto 12); end loop;   -- / 256 frames / 16
-               r_frm := s_frm(27 downto 12); r_max := m_busy(19 downto 4); n_win := n_win + 1;
-               n_frm := (others => '0'); m_busy := (others => '0');
+               r_frm := s_frm(27 downto 12); r_max := m_busy(19 downto 4); n_win := n_win + 1; r_gf := gf;
+               n_frm := (others => '0'); m_busy := (others => '0'); gf := (others => '0');
                s := (others => (others => '0')); s_frm := (others => '0');
             end if;
          end if;
@@ -91,7 +98,7 @@ t = t[:m.start()] + """   -- s11_stallprobe.apply: MIPS busy clocks per frame by
                          std_logic_vector(r(2)) & std_logic_vector(r(3)) &                       -- row 7
                          std_logic_vector(r(4)) & std_logic_vector(r(5)) &                       -- row 6
                          std_logic_vector(r(6)) & std_logic_vector(r(7)) &                       -- row 8
-                         std_logic_vector(r(8)) & std_logic_vector(r_max) &                      -- row 9
+                         std_logic_vector(r_gf) & std_logic_vector(r_max) &                      -- row 9
                          x"0000000000000000" &
                          TURBO_MEM & TURBO_COMP & TURBO_CACHE & "00000" & std_logic_vector(n_win) & std_logic_vector(r_frm);   -- row 1
       end if;
@@ -101,5 +108,7 @@ pc = 'unsigned(zn_dbg_mipspc)'
 idle = {"tekkenac": f'({pc} >= x"8004B5C4" and {pc} <= x"8004B5D4")',
         "tekken3": f'(({pc} >= x"801BBC28" and {pc} <= x"801BBC74") or ({pc} >= x"801B2468" and {pc} <= x"801B2484"))'}
 t = t.replace("IDLE_TEST", idle[os.environ.get("STALL_GAME", "tekkenac")])
+exit_pc = {"tekkenac": "false", "tekken3": f'{pc} = x"801BBC78"'}
+t = t.replace("GAME_FRAME_TEST", exit_pc[os.environ.get("STALL_GAME", "tekkenac")])
 top.write_text(t)
 print("s11_stallprobe applied")

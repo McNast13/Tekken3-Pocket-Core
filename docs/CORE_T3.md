@@ -79,3 +79,23 @@ Two bugs, both mine, both caught before or on the Pocket:
 Speed: the stall probe's figures per 4 s window (Off / Memory / Memory + compute / + data cache) are not comparable with
 each other, because each photo averages a different stretch of the attract mode (Memory + compute came out below Memory
 alone). Next: a probe that counts the game's own frames per second.
+
+## Frame rate on the Pocket (t3fps1, 2026-11-14)
+
+`s11_stallprobe.apply` row 9 now counts game frames per 256-vblank window: exits from Tekken 3's vsync wait loop (PC
+0x801BBC78). MAME's attract mode runs that loop 60 times a second, so 256 is full speed. Build t3fps1 (as t3boot2 plus
+the counter): 14,140 ALMs; setup misses only Slow 0C on the video clock (-0.945 ns), hold met in all four models. Two
+photos per CPU turbo setting, 3D attract scenes:
+
+| Setting | Game frames / 256 | Speed | Instructions per busy clock |
+|---|---|---|---|
+| Off | 128, 128 | 30 fps | 0.45 |
+| Memory | 128, 128 | 30 fps | 0.49 |
+| Memory + compute | 128, 128 | 30 fps | 0.48 |
+| + data cache | 175, 233 | 41, 55 fps | 0.61 |
+
+The game is tied to vsync (60 or 30 per frame). Without the data cache a frame's work takes about 1.3-1.4 frame times, so
+it runs at exactly 30; the memory and compute settings (+8%) do not change that. The data cache cuts load waits from 16%
+to 5% of busy clocks and memory-stage stalls from 16% to 8%. With it, the largest remaining stall is instruction fetch
+(15%). Open: a long soak test of the data cache (it was turned off on System 11 for read corruption), then the remaining
+10-25% in heavy scenes.
