@@ -10,16 +10,26 @@
 --                  0x300000-0x300003, and writes to the on-chip registers 0xFFFF00-0xFFFFFF (on-chip reads and the wait-state
 --                  writes to 0x300010/0x300030 are only counted in the summary)
 --   h8_summary.log per address: reads, writes, first frame, last value; and C352 writes per second
+--   h8_ram.bin     for replaying the trace: the H8's RAM at the end of frame 2, where the trace's registers begin
+--                  (0x080000-0x08FFFF, 64 KB, then the on-chip RAM 0xFFFD10-0xFFFF0F, 512 bytes)
+--   h8_reads.log   for replaying the trace: from that point to the trace's end, every read the H8 makes of what it does
+--                  not hold itself (shared RAM 0x080000-0x083FFF, C352, 0x300000-0x30FFFF, on-chip registers
+--                  0xFFFF10-0xFFFFFF), in order: H8 PC, address, value, mask. Everything else it reads is ROM or its own RAM
 local out = os.getenv("H8_OUT") or "."
 local trace_frames = tonumber(os.getenv("H8_TRACE_FRAMES") or "30")
 local max_events = tonumber(os.getenv("H8_EVENTS") or "2000000")
 local f, nev = 0, 0
 local lastread = {}
+local replay, dumping, rd = false, false, nil
 local taps, stat, order = {}, {}, {}
 local c352_sec, c352_n = {}, 0
 local ev, cpu, dbg
 
 local function note(rw, a, d, k, quiet)
+   if dumping then return end
+   if replay and rw == "R" and (a < 0xffff00 or a >= 0xffff10) then
+      rd:write(string.format("%06X %06X %08X %08X\n", cpu.state["CURPC"].value, a, d, k))
+   end
    local key = string.format("%s %06X", rw, a)
    local s = stat[key]
    if not s then s = { n = 0, first = f }; stat[key] = s; order[#order + 1] = key end
@@ -62,6 +72,17 @@ emu.register_frame_done(function()
       dbg:command(string.format('trace %s/h8_trace.log,:sub,noloop,{tracelog "ER0=%%08X ER1=%%08X ER2=%%08X ER3=%%08X ER4=%%08X ER5=%%08X ER6=%%08X ER7=%%08X CCR=%%02X ",er0,er1,er2,er3,er4,er5,er6,er7,ccr}', out))
    end
    if f <= trace_frames then dbg.visible_cpu = cpu end   -- MAME resets it as the H8 leaves reset; re-assert each frame
+   if f == 2 then                                       -- the trace's registers start here: snapshot the H8's RAM
+      local sp, b = cpu.spaces["program"], {}
+      dumping = true
+      for a = 0x080000, 0x08ffff do b[#b + 1] = string.char(sp:read_u8(a)) end
+      for a = 0xfffd10, 0xffff0f do b[#b + 1] = string.char(sp:read_u8(a)) end
+      dumping = false
+      local fh = io.open(out .. "/h8_ram.bin", "wb"); fh:write(table.concat(b)); fh:close()
+      rd = io.open(out .. "/h8_reads.log", "w")
+      replay = true
+   end
+   if f == trace_frames + 1 and rd then replay = false; rd:close(); rd = nil end
    if f == trace_frames + 1 then dbg:command("trace off,:sub") end
    if f % 60 == 0 then c352_sec[#c352_sec + 1] = c352_n; c352_n = 0 end
 end)
