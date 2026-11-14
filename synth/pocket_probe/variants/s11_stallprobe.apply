@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Speed probe for the Tekken 3 CPU work: where do the MIPS's busy clocks go? (needs s11_bootbits.apply and S11_FORCE_DIAG;
 replaces s11_cpuload.apply, same idle test and windows, so the busy and advance figures compare with t3turbo2's).
-Idle = the MIPS is in Tekken (tekkenac)'s vsync wait loop 0x8004B5C4-0x8004B5D4. Every busy clk1x clock goes into one class:
+Idle = the MIPS is in the game's vsync wait loop: Tekken (tekkenac) 0x8004B5C4-0x8004B5D4, or with STALL_GAME=tekken3
+Tekken 3's 0x801BBC28-0x801BBC74 and the random-number routine it calls there, 0x801B2468-0x801B2484 (found in MAME
+2026-11-14: frame-end PC samples, then disassembly). Every busy clk1x clock goes into one class:
   advance  ce = 1 and no stall bit (the pipeline moves, about one instruction)
   only one stall bit (cpu.vhd: stall = dmaStallCPU & stall4 & stall3 & stall2 & stall1):
     s1 fetch   (stage 1: instruction cache miss / uncached fetch)
@@ -14,16 +16,16 @@ Idle = the MIPS is in Tekken (tekkenac)'s vsync wait loop 0x8004B5C4-0x8004B5D4.
 Each is averaged per frame over a window of 256 vblank intervals (~4 s), in units of 16 clocks (16-bit fields), and stays on
 screen until the next window ends; a change of the turbo setting restarts the window.
 Rows shown on the diagnostic screen (PK_DBG2 bits):
-  1 [31:0]    = {TURBO_MEM, TURBO_COMP, 6'b0, windows completed [23:16], clocks per frame / 16 [15:0]}
+  1 [31:0]    = {TURBO_MEM, TURBO_COMP, TURBO_CACHE, 5'b0, windows completed [23:16], clocks per frame / 16 [15:0]}
   5 [255:224] = {busy / 16, advance / 16}
   7 [223:192] = {s1 fetch / 16, s2 decode / 16}
   6 [191:160] = {s3 execute / 16, s4 memory / 16}
   8 [159:128] = {dma / 16, multi / 16}
   9 [127:96]  = {ce0 / 16, largest busy count in one frame / 16}
 Check: advance + s1 + s2 + s3 + s4 + dma + multi + ce0 = busy (to within rounding).
-Usage: s11_stallprobe.apply OUTDIR   (S11_PROBES, after pocket_emu.apply)
+Usage: [STALL_GAME=tekken3] s11_stallprobe.apply OUTDIR   (S11_PROBES, after pocket_emu.apply)
 """
-import re, sys
+import os, re, sys
 from pathlib import Path
 
 top = Path(sys.argv[1]) / "rtl/psx_top.vhd"
@@ -35,7 +37,7 @@ t = t[:m.start()] + """   -- s11_stallprobe.apply: MIPS busy clocks per frame by
       type acc_t is array (0 to 8) of unsigned(27 downto 0);   -- 256 frames x 566k clocks < 2^28
       type res_t is array (0 to 8) of unsigned(15 downto 0);
       variable vbl_d : std_logic := '0';
-      variable turbo_d : std_logic_vector(1 downto 0) := "00";
+      variable turbo_d : std_logic_vector(2 downto 0) := "000";
       variable idle : std_logic := '0';
       variable k : integer range 0 to 8;
       variable n_frm : unsigned(8 downto 0) := (others => '0');
@@ -48,7 +50,7 @@ t = t[:m.start()] + """   -- s11_stallprobe.apply: MIPS busy clocks per frame by
       variable st : std_logic_vector(4 downto 0);
    begin
       if rising_edge(clk1x) then
-         if unsigned(zn_dbg_mipspc) >= x"8004B5C4" and unsigned(zn_dbg_mipspc) <= x"8004B5D4" then idle := '1'; else idle := '0'; end if;
+         if IDLE_TEST then idle := '1'; else idle := '0'; end if;
          st := std_logic_vector(dbg_cpu_stall);
          s_frm := s_frm + 1;
          if idle = '0' then
@@ -68,7 +70,7 @@ t = t[:m.start()] + """   -- s11_stallprobe.apply: MIPS busy clocks per frame by
             end if;
             s(k) := s(k) + 1;
          end if;
-         if (TURBO_MEM & TURBO_COMP) /= turbo_d then
+         if (TURBO_MEM & TURBO_COMP & TURBO_CACHE) /= turbo_d then
             n_frm := (others => '0'); m_busy := (others => '0'); c_busy := (others => '0');
             s := (others => (others => '0')); s_frm := (others => '0');
          elsif irq_VBLANK = '1' and vbl_d = '0' then
@@ -82,7 +84,7 @@ t = t[:m.start()] + """   -- s11_stallprobe.apply: MIPS busy clocks per frame by
                s := (others => (others => '0')); s_frm := (others => '0');
             end if;
          end if;
-         turbo_d := TURBO_MEM & TURBO_COMP;
+         turbo_d := TURBO_MEM & TURBO_COMP & TURBO_CACHE;
          vbl_d := irq_VBLANK;
          s11_boot_dbg <= x"00000000" &
                          std_logic_vector(r(0)) & std_logic_vector(r(1)) &                       -- row 5
@@ -91,9 +93,13 @@ t = t[:m.start()] + """   -- s11_stallprobe.apply: MIPS busy clocks per frame by
                          std_logic_vector(r(6)) & std_logic_vector(r(7)) &                       -- row 8
                          std_logic_vector(r(8)) & std_logic_vector(r_max) &                      -- row 9
                          x"0000000000000000" &
-                         TURBO_MEM & TURBO_COMP & "000000" & std_logic_vector(n_win) & std_logic_vector(r_frm);   -- row 1
+                         TURBO_MEM & TURBO_COMP & TURBO_CACHE & "00000" & std_logic_vector(n_win) & std_logic_vector(r_frm);   -- row 1
       end if;
    end process;
 """ + t[m.end():]
+pc = 'unsigned(zn_dbg_mipspc)'
+idle = {"tekkenac": f'({pc} >= x"8004B5C4" and {pc} <= x"8004B5D4")',
+        "tekken3": f'(({pc} >= x"801BBC28" and {pc} <= x"801BBC74") or ({pc} >= x"801B2468" and {pc} <= x"801B2484"))'}
+t = t.replace("IDLE_TEST", idle[os.environ.get("STALL_GAME", "tekkenac")])
 top.write_text(t)
 print("s11_stallprobe applied")

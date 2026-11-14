@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""Tekken 3 on System 12: the main CPU's memory map, the ROM DMA (channel 5) and a fake H8 (docs/CORE_T3.md items 4-10,
+5 and 7). Sources: MAME namcos12.cpp (namcos12_map, dmaoffset_w, namcos12_rom_read) and docs/STUDY.md section 7.
+
+  memorymux.vhd  0x1F000000 bank select (2 MB page) -> reads of the window 0x1FA00000-0x1FBFFFFF from SDRAM 0x800000 + page;
+                 0x1F700000 ROM DMA offset register -> s12_dmaoffset; shared RAM 0x1F080000-0x1F083FFF and EEPROM
+                 0x1F140000-0x1F140FFF go to zn1_io's mailbox (offset 0x4000) and EEPROM (0x30000); other writes in
+                 0x1F000000-0x1F7FFFFF are ignored (watchdog etc.). zn1_io leaves 0x1FA00000 (now ROM).
+  dma.vhd        channel 5 (ROM -> RAM) takes its words from s12_romdma, stalling while it has none.
+  psx_top.vhd    instantiates s12_romdma (pocket/core/s12) and exports its SDRAM side; psx_mister.vhd passes it on.
+  SYSTEM11.sv    s12_romdma shares SDRAM channel 3 with the C76 SPROG and C352 wave readers (one read in flight at a
+                 time; it goes only while they are idle and not asking).
+  c76.vhd        the C76 is replaced by a fake H8 on the same bus to the shared RAM: once a frame (IRQ0, at vblank) it
+                 answers 0x3163 at shared 0x3002 with 0x7601 (one frame later) and clears the command words 0x30F0,
+                 0x306A and 0x3078, as tools/mame/h8_halt.lua H8_FAKE=1 does in MAME. No sound, no inputs.
+  psx_top.vhd    GPU in the retail texture-page layout (not System 11's "gputype1"). The GPU already addresses 2 MB of VRAM
+                 (10-bit rows, inherited from the ZN-1 core) and the PSRAM die holds 16 MB, so item 11 needs nothing more.
+  SYSTEM11.sv    loader: the wave ROM download grows to 8 MB. Data slots: pocket/dist data.json, tools/make_t3_roms.py.
+Usage: t3_s12map.apply OUTDIR   (S11_PROBES, after pocket_emu.apply; not with t3_c76_stub)
+"""
+import re
+import shutil
+import sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def sub(path, old, new, count=1):
+    f = out / path
+    t = f.read_text()
+    n = t.count(old)
+    assert n == count, f"{path}: expected {count} of {old[:80]!r}, found {n}"
+    f.write_text(t.replace(old, new))
+
+
+# ---- s12_romdma into the tree --------------------------------------------------------------------------------------
+shutil.copy(ROOT / "pocket/core/s12/s12_romdma.vhd", out / "rtl/s12_romdma.vhd")
+sub("rtl/psx.qip", "set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) dma.vhd ]\n",
+    "set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) dma.vhd ]\n"
+    "set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) s12_romdma.vhd ]\n")
+
+# ---- memorymux.vhd -------------------------------------------------------------------------------------------------
+mm = "rtl/memorymux.vhd"
+sub(mm, "      s11_up               : out std_logic := '0';\n",
+    "      s11_up               : out std_logic := '0';\n"
+    "      -- System 12 (t3_s12map.apply): the ROM DMA offset register at 0x1F700000, for s12_romdma\n"
+    "      s12_dmaoffset        : out std_logic_vector(31 downto 0) := (others => '0');\n")
+sub(mm, "   signal zn_bank_8mb            : std_logic_vector(2 downto 0) := (others => '0');\n",
+    "   signal zn_bank_8mb            : std_logic_vector(2 downto 0) := (others => '0');\n"
+    "   -- System 12: 2 MB page of the ROM window (bank select at 0x1F000000) and the ROM DMA offset (0x1F700000)\n"
+    "   signal s12_bank               : std_logic_vector(4 downto 0) := (others => '0');\n"
+    "   signal s12_dmaoffset_r        : std_logic_vector(31 downto 0) := (others => '0');\n")
+sub(mm, "   dbg_cubeclut_bank0_seen  <= cubeclut_bank0_seen;\n",
+    "   dbg_cubeclut_bank0_seen  <= cubeclut_bank0_seen;\n   s12_dmaoffset            <= s12_dmaoffset_r;\n")
+sub(mm, "            zn_bank_8mb      <= (others => '0');\n",
+    "            zn_bank_8mb      <= (others => '0');\n            s12_bank         <= (others => '0');\n")
+
+# the rom8_64 upper-bank latch at 0x1F080000 (System 11) becomes the System 12 write decode
+t = (out / mm).read_text()
+a = t.index("                        elsif (zn_system11 = '1' and mem_rnw = '0' and mem_addressData(28 downto 0) >= 16#1F080000# and mem_addressData(28 downto 0) < 16#1F080004#) then")
+b = t.index("                        elsif (zn_system11 = '1' and\n                               ((mem_addressData(28 downto 0) >= 16#1F780000#", a)
+assert "s11_up_r <= '1';" in t[a:b]
+t = t[:a] + """                        elsif (zn_system11 = '1' and mem_rnw = '0' and mem_addressData(28 downto 0) >= 16#1F000000# and mem_addressData(28 downto 0) < 16#1F000004#) then
+                           -- System 12 bank select (MAME bankoffset_w, 16-bit at 0x1F000000): the 2 MB page of the ROM window
+                           if (mem_writeMask(1 downto 0) /= "00") then
+                              s12_bank <= mem_dataWrite(4 downto 0);
+                           end if;
+                           state <= BUSWRITE;
+                        elsif (zn_system11 = '1' and mem_rnw = '0' and mem_addressData(28 downto 0) >= 16#1F700000# and mem_addressData(28 downto 0) < 16#1F710000#) then
+                           -- System 12 ROM DMA offset (MAME dmaoffset_w): byte offset of the halfword, or data << 16. Stores
+                           -- arrive word-aligned with the halfword lane in the write mask; on a full-word store MAME calls
+                           -- the upper half last, so it wins.
+                           if (mem_writeMask(3 downto 2) /= "00") then
+                              s12_dmaoffset_r <= mem_dataWrite(31 downto 16) & std_logic_vector(mem_addressData(15 downto 2)) & "10";
+                           else
+                              s12_dmaoffset_r <= mem_dataWrite(15 downto 0) & std_logic_vector(mem_addressData(15 downto 2)) & "00";
+                           end if;
+                           state <= BUSWRITE;
+                        elsif (zn_system11 = '1' and
+                               ((mem_addressData(28 downto 0) >= 16#1F080000# and mem_addressData(28 downto 0) < 16#1F084000#) or
+                                (mem_addressData(28 downto 0) >= 16#1F140000# and mem_addressData(28 downto 0) < 16#1F141000#))) then
+                           -- System 12 shared RAM (with the H8) and AT28C16 EEPROM: served by zn1_io's mailbox and EEPROM
+                           -- over bus_znio, at their System 11 offsets (see the bus_znio_addr assignment)
+                           ext_lastactive <= '0';
+                           if (mem_rnw = '0') then
+                              state   <= BUSWRITE;
+                           else
+                              state   <= BUSREADREQUEST;
+                              waitcnt <= 0;
+                           end if;
+                        elsif (zn_system11 = '1' and mem_rnw = '0' and mem_addressData(28 downto 0) >= 16#1F000000# and mem_addressData(28 downto 0) < 16#1F800000#) then
+                           state <= BUSWRITE;   -- System 12: other writes here are ignored (0x1F008000, 0x1F010000, watchdog 0x1F018000, 0x1F1BFF08)
+""" + t[b:]
+(out / mm).write_text(t)
+
+# System 11 banked ROM reads (8 x 1 MB windows at 0x1F000000) -> System 12 window 0x1FA00000-0x1FBFFFFF, 2 MB pages
+sub(mm, "elsif (zn_system11 = '1' and mem_rnw = '1' and mem_addressData(28 downto 0) >= 16#1F000000# and mem_addressData(28 downto 0) < 16#1F800000#) then -- S11 banked ROM (8x1MB windows)",
+    "elsif (zn_system11 = '1' and mem_rnw = '1' and mem_addressData(28 downto 0) >= 16#1FA00000# and mem_addressData(28 downto 0) < 16#1FC00000#) then -- System 12 banked ROM window (2 MB page s12_bank)")
+sub(mm, "ram_Adr         <= std_logic_vector(to_unsigned(16#800000#, 27) + resize(s11_page & to_unsigned(0, 20), 27) + resize(unsigned(mem_addressData(19 downto 2)) & \"00\", 27));",
+    "ram_Adr         <= std_logic_vector(to_unsigned(16#800000#, 27) + resize(unsigned(s12_bank) & mem_addressData(20 downto 2) & \"00\", 27));")
+
+# bus decode: zn1_io leaves 0x1FA00000 and serves the System 12 shared RAM and EEPROM
+sub(mm, """      if (address >= 16#1FA00000# and address < 16#1FB00000#) then
+         bus_znio_read  <= enableRead;
+         bus_znio_write <= enableWrite;
+      end if;
+""", """      -- System 12 (t3_s12map.apply): 0x1FA00000 is the ROM window now. zn1_io serves the shared RAM at its mailbox
+      -- offsets (0x4000 + offset: halfword n of the shared RAM is mailbox word n) and the EEPROM at 0x30000 + offset.
+      if (address >= 16#1F080000# and address < 16#1F084000#) then
+         bus_znio_addr  <= to_unsigned(16#4000#, 21) + resize(address(13 downto 0), 21);
+         bus_znio_read  <= enableRead;
+         bus_znio_write <= enableWrite;
+      elsif (address >= 16#1F140000# and address < 16#1F141000#) then
+         bus_znio_addr  <= to_unsigned(16#30000#, 21) or resize(address(11 downto 0), 21);
+         bus_znio_read  <= enableRead;
+         bus_znio_write <= enableWrite;
+      end if;
+""")
+
+# ---- dma.vhd: channel 5 ----------------------------------------------------------------------------------------------
+dma = "rtl/dma.vhd"
+sub(dma, "      DMA_SPU_read         : in  std_logic_vector(15 downto 0);\n",
+    "      DMA_SPU_read         : in  std_logic_vector(15 downto 0);\n"
+    "      \n"
+    "      -- System 12 ROM DMA (channel 5, t3_s12map.apply): words from s12_romdma\n"
+    "      romdma_start         : out std_logic := '0';   -- a new channel 5 DMA begins\n"
+    "      romdma_pop           : out std_logic := '0';   -- channel 5 takes romdma_data\n"
+    "      romdma_data          : in  std_logic_vector(31 downto 0);\n"
+    "      romdma_valid         : in  std_logic;\n")
+sub(dma, "   readStall <= '1' when (activeChannel = 2 and toDevice = '0' and gpu_dmaRequest = '0') else '0';\n",
+    "   readStall <= '1' when (activeChannel = 2 and toDevice = '0' and gpu_dmaRequest = '0') or\n"
+    "                         (activeChannel = 5 and toDevice = '0' and romdma_valid = '0') else '0';\n"
+    "   \n"
+    "   -- System 12 ROM DMA: the same conditions as the WORKING transfer and the OFF -> STARTING step below. A channel\n"
+    "   -- that is already on (a request-mode DMA resuming after a pause) carries on from where its reader is.\n"
+    "   romdma_pop   <= '1' when (ce = '1' and reset = '0' and dmaState = WORKING and activeChannel = 5 and toDevice = '0' and\n"
+    "                             fifoOut_NearFull = '0' and wordAccu = 0 and readStall = '0') else '0';\n"
+    "   romdma_start <= '1' when (ce = '1' and reset = '0' and dmaState = OFF and dmaRequest = '1' and canDMA = '1' and\n"
+    "                             triggerchannel = 5 and dmaArray(5).channelOn = '0') else '0';\n")
+# channel 5 must also be triggered: dma.vhd starts a channel on its CHCR bit 28 or its device's request line, and channel 5
+# had neither. Tekken 3 writes CHCR 0x01000000 (bit 24 only; MAME starts at once); the System 12 ROM side is always ready.
+sub(dma, "            if (dmaArray(6).D_CHCR(28) = '1')                                then triggerDMA(6) <= '1'; end if;\n",
+    "            triggerDMA(5) <= '1';   -- System 12 ROM DMA: the ROM is always ready (t3_s12map.apply)\n"
+    "            if (dmaArray(6).D_CHCR(28) = '1')                                then triggerDMA(6) <= '1'; end if;\n")
+t = (out / dma).read_text()
+t, n = re.subn(r"( *)when others => report \"DMA channel not implemented\" severity failure; *\n",
+               lambda m: (f"{m[1]}when 5 =>\n"
+                          f"{m[1]}   if (toDevice = '0') then   -- System 12 ROM -> RAM (t3_s12map.apply)\n"
+                          f"{m[1]}      fifoOut_Wr                <= not dmaSettings.D_MADR(23);\n"
+                          f"{m[1]}      fifoOut_Din(52 downto 32) <= std_logic_vector(dmaSettings.D_MADR(22 downto 2));\n"
+                          f"{m[1]}      fifoOut_Din(31 downto 0)  <= romdma_data;\n"
+                          f"{m[1]}   end if;\n"
+                          f"{m[1]}\n"
+                          f"{m[1]}when others => report \"DMA channel not implemented\" severity failure;\n"), t)
+assert n == 1, n
+(out / dma).write_text(t)
+
+# ---- psx_top.vhd ---------------------------------------------------------------------------------------------------
+top = "rtl/psx_top.vhd"
+ports = ("      -- System 12 ROM DMA reader on SDRAM channel 3 (t3_s12map.apply)\n"
+         "      s12_sd_grant_ok : in  std_logic := '0';\n"
+         "      s12_sd_req      : out std_logic;\n"
+         "      s12_sd_busy     : out std_logic;\n"
+         "      s12_sd_addr     : out std_logic_vector(26 downto 0);\n"
+         "      s12_sd_ready    : in  std_logic := '0';\n"
+         "      s12_sd_dout     : in  std_logic_vector(31 downto 0) := (others => '0');\n")
+sub(top, "      zn_dbg_eeprom_o : out std_logic_vector(31 downto 0) := x\"BEEFDEAD\";  -- DIAG mode 7: {BD4E,BD4C} mailbox store data\n",
+    "      zn_dbg_eeprom_o : out std_logic_vector(31 downto 0) := x\"BEEFDEAD\";  -- DIAG mode 7: {BD4E,BD4C} mailbox store data\n" + ports)
+sub(top, "   signal dma_spu_timing_value   : unsigned(3 downto 0);\n",
+    "   signal dma_spu_timing_value   : unsigned(3 downto 0);\n"
+    "   signal romdma_start, romdma_pop, romdma_valid : std_logic;\n"
+    "   signal romdma_data            : std_logic_vector(31 downto 0);\n"
+    "   signal s12_dmaoffset          : std_logic_vector(31 downto 0);\n")
+sub(top, "      s11_up               => zn_s11_up,\n",
+    "      s11_up               => zn_s11_up,\n      s12_dmaoffset        => s12_dmaoffset,\n")
+sub(top, "      DMA_SPU_read         => DMA_SPU_read,\n",
+    "      DMA_SPU_read         => DMA_SPU_read,\n"
+    "      romdma_start         => romdma_start,\n"
+    "      romdma_pop           => romdma_pop,\n"
+    "      romdma_data          => romdma_data,\n"
+    "      romdma_valid         => romdma_valid,\n")
+sub(top, "   idma : entity work.dma\n",
+    "   is12_romdma : entity work.s12_romdma\n"
+    "   port map (\n"
+    "      clk => clk1x, reset => reset_intern, start => romdma_start, offset => s12_dmaoffset,\n"
+    "      pop => romdma_pop, data => romdma_data, valid => romdma_valid,\n"
+    "      sd_grant_ok => s12_sd_grant_ok, sd_req => s12_sd_req, sd_busy => s12_sd_busy, sd_addr => s12_sd_addr,\n"
+    "      sd_ready => s12_sd_ready, sd_dout => s12_sd_dout\n"
+    "   );\n\n"
+    "   idma : entity work.dma\n")
+
+# System 12's GPU (CXD8654Q) has the retail texture-page layout with 2 MB VRAM: texture page bit 11 is the +512 row base
+# (Tekken 3 sets it on ~31% of its textured polygons, MAME trace 2026-11-14). The System 11 rule (no KEYCUS -> Tekken 1's
+# CXD8538Q, "gputype1") would pick the old layout for Tekken 3, which has no KEYCUS.
+sub(top, "   s11_gputype1 <= '1' when (zn_system11 = '1' and (keycus_id = x\"00\" or zn_gputype1_force = '1')) else '0';\n",
+    "   s11_gputype1 <= '0';   -- t3_s12map.apply: System 12 GPU (retail layout, 2 MB VRAM)\n")
+
+# ---- psx_mister.vhd ------------------------------------------------------------------------------------------------
+pm = "rtl/psx_mister.vhd"
+sub(pm, "      zn_dbg_eeprom_o : out std_logic_vector(31 downto 0) := x\"BEEFDEAD\";\n",
+    "      zn_dbg_eeprom_o : out std_logic_vector(31 downto 0) := x\"BEEFDEAD\";\n" + ports)
+sub(pm, "      zn_dbg_eeprom_o => zn_dbg_eeprom_o,\n",
+    "      zn_dbg_eeprom_o => zn_dbg_eeprom_o,\n"
+    "      s12_sd_grant_ok => s12_sd_grant_ok,\n"
+    "      s12_sd_req      => s12_sd_req,\n"
+    "      s12_sd_busy     => s12_sd_busy,\n"
+    "      s12_sd_addr     => s12_sd_addr,\n"
+    "      s12_sd_ready    => s12_sd_ready,\n"
+    "      s12_sd_dout     => s12_sd_dout,\n")
+
+# ---- SYSTEM11.sv: SDRAM channel 3 ----------------------------------------------------------------------------------
+sv = "SYSTEM11.sv"
+sub(sv, "// C76 SPROG reader FSM: on a C76 SPROG read,",
+    "// System 12 ROM DMA reader (t3_s12map.apply, s12_romdma in psx_top) on ch3. It starts a read only while the SPROG and\n"
+    "// wave readers are idle and not asking (s12_sd_grant_ok, assigned by the ch3 mux below); they wait while it has a read\n"
+    "// in flight (s12_sd_busy), so one ch3 read is in flight at a time and each sdramCh3_done belongs to its issuer.\n"
+    "wire        s12_sd_req, s12_sd_busy, s12_sd_grant_ok;\n"
+    "wire [26:0] s12_sd_addr;\n\n"
+    "// C76 SPROG reader FSM: on a C76 SPROG read,")
+sub(sv, "   2'd0: if (c76_sprog_rd && zn_platform_r[4] && ~clr_active && ~sentinel_active && wave_st == 2'd0 &&\n",
+    "   2'd0: if (c76_sprog_rd && zn_platform_r[4] && ~clr_active && ~sentinel_active && wave_st == 2'd0 && ~s12_sd_busy &&\n")
+sub(sv, "             sprog_st == 2'd0 && ~c76_sprog_rd &&\n",
+    "             sprog_st == 2'd0 && ~c76_sprog_rd && ~s12_sd_busy &&\n")
+sub(sv, "   .zn_dbg_eeprom_o(zn_dbg_eeprom_o),\n",
+    "   .zn_dbg_eeprom_o(zn_dbg_eeprom_o),\n"
+    "   .s12_sd_grant_ok(s12_sd_grant_ok), .s12_sd_req(s12_sd_req), .s12_sd_busy(s12_sd_busy), .s12_sd_addr(s12_sd_addr),\n"
+    "   .s12_sd_ready(sdramCh3_done & s12_sd_busy), .s12_sd_dout(cheats_din),\n")
+sub(sv, "wire [26:0] clr_ch3_addr = {5'b0, clr_addr, 2'b00};\n",
+    "wire [26:0] clr_ch3_addr = {5'b0, clr_addr, 2'b00};\n"
+    "assign s12_sd_grant_ok = zn_platform_r[4] && ~clr_active && ~sentinel_active && sprog_st == 2'd0 && ~c76_sprog_rd &&\n"
+    "                         wave_st == 2'd0 && ~c76_wave_rd &&\n"
+    "                         ~(bios_download | fixedrom_download | bankedrom_download | sprog_download | wave_download);\n")
+sub(sv, "(wave_ch3_own ? c76_wave_sdaddr : c76_sprog_sdaddr)",
+    "(wave_ch3_own ? c76_wave_sdaddr : (s12_sd_busy ? s12_sd_addr : c76_sprog_sdaddr))")
+sub(sv, "(c76_sprog_req | c76_wave_req)", "(c76_sprog_req | c76_wave_req | s12_sd_req)")
+
+# ---- SYSTEM11.sv: loader. Program (4 MB) and banked ROM (28 MB, data slots 4 + 5) fit the System 11 layout as it is;
+# the wave ROM grows from 4 MB to 8 MB (SDRAM 0x2840000-0x303FFFF, above the banked ROM's end at 0x23FFFFF).
+sub(sv, "ramdownload_wraddr <= WAVE_START[26:0] + {5'b0, ioctl_addr[21:0]};",
+    "ramdownload_wraddr <= WAVE_START[26:0] + {4'b0, ioctl_addr[22:0]};")
+
+# ---- c76.vhd: the fake H8 --------------------------------------------------------------------------------------------
+f = out / "rtl/c76.vhd"
+t = f.read_text()
+i = t.index("architecture arch of c76 is")
+f.write_text(t[:i] + """-- t3_s12map.apply: a fake H8 in the C76's place (see the docstring of t3_s12map.apply). Bus cycles as the C76 makes
+-- them: address and strobe held until ext_ready on a ce clock (a shared-RAM read is ready one ce after its address).
+-- The shared RAM is at 0x4000 + byte offset; halfword 0x3002 is bytes 0x7002 (low) and 0x7003 (high).
+architecture fake_h8 of c76 is
+   signal step   : integer range 0 to 15 := 15;     -- 15 = idle
+   signal pend   : std_logic := '0';                -- 0x3163 seen: answer at the next frame
+   signal lo     : std_logic_vector(7 downto 0) := x"00";
+   signal irq0_d : std_logic := '0';
+begin
+   process (clk)
+   begin
+      if rising_edge(clk) then
+         if reset = '1' then
+            step <= 15; pend <= '0'; irq0_d <= '0';
+         elsif ce = '1' then
+            irq0_d <= irq0;
+            if step = 15 then
+               if irq0 = '1' and irq0_d = '0' then   -- once a frame
+                  if pend = '1' then step <= 0; else step <= 2; end if;
+               end if;
+            elsif ext_ready = '1' then
+               case step is
+                  when 1      => pend <= '0';
+                  when 2      => lo <= ext_din;
+                  when 3      => if ext_din = x"31" and lo = x"63" then pend <= '1'; end if;
+                  when others => null;
+               end case;
+               if step = 9 then step <= 15; else step <= step + 1; end if;
+            end if;
+         end if;
+      end if;
+   end process;
+
+   with step select ext_addr <=
+      x"007002" when 0 | 2,
+      x"007003" when 1 | 3,
+      x"0070F0" when 4,
+      x"0070F1" when 5,
+      x"00706A" when 6,
+      x"00706B" when 7,
+      x"007078" when 8,
+      x"007079" when 9,
+      x"000000" when others;
+   ext_dout <= x"01" when step = 0 else x"76" when step = 1 else x"00";
+   ext_rd   <= '1' when step = 2 or step = 3 else '0';
+   ext_wr   <= '1' when step = 0 or step = 1 or (step >= 4 and step <= 9) else '0';
+
+   dbg_pc     <= x"00000" & std_logic_vector(to_unsigned(step, 4));
+   dbg_opcode <= lo;
+   dbg_valid  <= pend;
+   dbg_halted <= '0';
+   dbg_x      <= (others => '0');
+   dbg_ram80  <= (others => '0');
+   dbg_ram83  <= (others => '0');
+end architecture;
+""")
+print("t3_s12map applied")

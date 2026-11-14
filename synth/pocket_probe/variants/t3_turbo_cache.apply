@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""CPU speed experiment: make PSX_MiSTer's data cache (TURBO_CACHE) selectable again, as CPU turbo setting 2
+(interact.json "Memory + compute + data cache"). Settings 0 (off), 1 (memory) and 3 (memory + compute) are unchanged.
+The System 11 port forced TURBO_CACHE off (2026-06-28) as the source of residual read corruption on System 11; the
+t3stall1 probe found data-load waits are ~47% of the CPU's busy clocks, so this measures what the cache gains and
+whether it corrupts Tekken. Measurement build: not for release.
+Usage: t3_turbo_cache.apply OUTDIR   (S11_PROBES, after pocket_emu.apply)
+"""
+import sys
+from pathlib import Path
+
+f = Path(sys.argv[1]) / "SYSTEM11.sv"
+t = f.read_text()
+old = ("   TURBO_MEM      <= status[80:79] > 0;\n"
+       "   TURBO_COMP     <= status[80:79] == 2'b11;\n")
+new = ("   TURBO_MEM      <= status[80:79] > 0;\n"
+       "   TURBO_COMP     <= status[80:79] >= 2'b10;   // t3_turbo_cache.apply: 2 = memory + compute + data cache\n")
+assert t.count(old) == 1, "turbo decode not found"
+t = t.replace(old, new)
+old = "   TURBO_CACHE    <= 1'b0;\n"
+assert t.count(old) == 1, "TURBO_CACHE tie-off not found"
+t = t.replace(old, "   TURBO_CACHE    <= status[80:79] == 2'b10;   // t3_turbo_cache.apply (was forced off)\n")
+f.write_text(t)
+print("t3_turbo_cache applied")
