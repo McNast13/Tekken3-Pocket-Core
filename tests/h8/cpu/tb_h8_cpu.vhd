@@ -11,7 +11,9 @@ use ieee.std_logic_textio.all;
 entity tb_h8_cpu is
    -- FLAT: random-instruction tests (tests/h8/rand): every address from 0x080000 up is the 64 KB RAM (address mod 64 KB),
    -- nothing is "outside"
-   generic (REF : string := "../ref"; MAXINS : integer := 200000; FLAT : boolean := false);
+   -- IDLE_LO..IDLE_HI: a polling loop (Tekken 3: 0x158A-0x1591) left out of the "busy" clocks-per-instruction figure
+   generic (REF : string := "../ref"; MAXINS : integer := 200000; FLAT : boolean := false;
+            IDLE_LO : integer := 16#158A#; IDLE_HI : integer := 16#1591#);
 end entity;
 
 architecture tb of tb_h8_cpu is
@@ -22,7 +24,7 @@ architecture tb of tb_h8_cpu is
    signal bus_wdata, bus_rdata : std_logic_vector(15 downto 0) := (others => '0');
    signal bus_rd, bus_wr, bus_ack, irq, irq_ack, illegal, dstart : std_logic := '0';
    signal bus_be : std_logic_vector(1 downto 0);
-   signal irq_vec : std_logic_vector(5 downto 0) := (others => '0');
+   signal irq_vec : std_logic_vector(5 downto 0);
    signal syscr_ue : std_logic := '0';
    signal load_pc : std_logic_vector(23 downto 0);
    signal load_ccr : std_logic_vector(7 downto 0);
@@ -37,6 +39,12 @@ architecture tb of tb_h8_cpu is
    shared variable rom : rom_t;
    shared variable ram : ram_t;
    signal ninstr : integer := 0;
+   -- interrupts: MAME took irq_v before instruction irq_at; irq is raised from the first clock of instruction irq_at - 1
+   -- (combinational, so it does not depend on how many clocks the CPU takes per instruction)
+   signal nst : integer := 0;                                    -- instructions started before this clock
+   signal dsi : integer range 0 to 1;
+   signal irq_at : integer := integer'high;
+   signal irq_v : integer := 0;
 
    function outside(a : unsigned(23 downto 0)) return boolean is
    begin
@@ -44,6 +52,9 @@ architecture tb of tb_h8_cpu is
    end function;
 begin
    clk <= not clk after 5 ns when not done;
+   dsi <= 1 when dstart = '1' else 0;
+   irq <= '1' when nst + dsi >= irq_at else '0';
+   irq_vec <= std_logic_vector(to_unsigned(irq_v, 6));
 
    dut : entity work.h8_cpu
       port map (clk => clk, ce => '1', reset => reset, bus_addr => bus_addr, bus_wdata => bus_wdata, bus_rdata => bus_rdata,
@@ -121,9 +132,9 @@ begin
       variable ers : std_logic_vector(255 downto 0);
       variable epc : std_logic_vector(23 downto 0);
       variable eccr : std_logic_vector(7 downto 0);
-      variable n, irq_at, irq_v, idle : integer := 0;
+      variable n, idle, qa, qv : integer := 0;
+      variable clks, bclks, bins, ipc : integer := 0;          -- all clocks; busy clocks and instructions
       file ef, qf : text;
-      variable have_irq : boolean := false;
       variable s : line;
    begin
       file_open(f, REF & "/rom.hex", read_mode);
@@ -142,7 +153,7 @@ begin
       file_close(f);
       file_open(ef, REF & "/expect.txt", read_mode);
       file_open(qf, REF & "/irqs.txt", read_mode);
-      if not endfile(qf) then readline(qf, l); read(l, irq_at); read(l, irq_v); have_irq := true; end if;
+      if not endfile(qf) then readline(qf, l); read(l, qa); read(l, qv); irq_at <= qa; irq_v <= qv; end if;
       wait until rising_edge(clk); wait until rising_edge(clk);
       reset <= '0';
       loop
@@ -150,9 +161,16 @@ begin
          if illegal = '1' then
             report "instruction " & integer'image(n) & " at " & to_hstring(dpc) & ": opcode not implemented" severity failure;
          end if;
-         if irq_ack = '1' then irq <= '0'; end if;
+         if irq_ack = '1' then                                -- taken: the next one
+            if not endfile(qf) then readline(qf, l); read(l, qa); read(l, qv); irq_at <= qa; irq_v <= qv;
+            else irq_at <= integer'high; end if;
+         end if;
+         clks := clks + 1;
+         if ipc < IDLE_LO or ipc > IDLE_HI then bclks := bclks + 1; end if;
          if dstart = '1' then
             idle := 0;
+            ipc := to_integer(unsigned(dpc));
+            if ipc < IDLE_LO or ipc > IDLE_HI then bins := bins + 1; end if;
             exit when endfile(ef) or n >= MAXINS;
             readline(ef, l); hread(l, epc); hread(l, eccr);
             for i in 0 to 7 loop hread(l, v32); ers(32 * i + 31 downto 32 * i) := v32; end loop;
@@ -167,12 +185,8 @@ begin
                report "FAILED" severity failure;
             end if;
             ninstr <= n;
-            -- the interrupt MAME took before instruction irq_at: raise it once instruction irq_at - 1 has started
-            if have_irq and n + 1 = irq_at then
-               irq <= '1'; irq_vec <= std_logic_vector(to_unsigned(irq_v, 6));
-               if not endfile(qf) then readline(qf, l); read(l, irq_at); read(l, irq_v); else have_irq := false; end if;
-            end if;
             n := n + 1;
+            nst <= n;
          else
             idle := idle + 1;
             assert idle < 2000 report "no instruction for 2000 clocks after instruction " & integer'image(n) &
@@ -193,6 +207,9 @@ begin
          report "tb_h8_cpu: RAM matches MAME at the end" severity note;
       end if;
       report "tb_h8_cpu: " & integer'image(n) & " instructions match MAME" severity note;
+      report "tb_h8_cpu: " & integer'image(clks) & " clocks; outside the idle loop " & integer'image(bins) &
+             " instructions in " & integer'image(bclks) & " clocks (x100 per instruction: " &
+             integer'image((100 * bclks) / (bins + 1)) & ")" severity note;
       done <= true;
       wait;
    end process;

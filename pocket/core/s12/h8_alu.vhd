@@ -28,27 +28,16 @@ package h8_alu_pkg is
    constant ALU_DAA   : unsigned(4 downto 0) := to_unsigned(16, 5);   -- byte
    constant ALU_DAS   : unsigned(4 downto 0) := to_unsigned(17, 5);   -- byte
    constant ALU_PASS  : unsigned(4 downto 0) := to_unsigned(18, 5);   -- b, flags unchanged (adds, subs, mulxu)
+   -- the whole ALU as a procedure, for callers inside a clocked process (h8_cpu); the entity below wraps it
+   procedure alu_calc(op : unsigned(4 downto 0); sz : std_logic_vector(1 downto 0); a, b : std_logic_vector(31 downto 0);
+                      ccr_in : std_logic_vector(7 downto 0);
+                      variable res : out std_logic_vector(31 downto 0); variable ccr_out : out std_logic_vector(7 downto 0));
 end package;
 
-library ieee;
-use ieee.std_logic_1164.all;
-use ieee.numeric_std.all;
-use work.h8_alu_pkg.all;
-
-entity h8_alu is
-   port (
-      op      : in  unsigned(4 downto 0);
-      sz      : in  std_logic_vector(1 downto 0);
-      a, b    : in  std_logic_vector(31 downto 0);
-      ccr_in  : in  std_logic_vector(7 downto 0);
-      res     : out std_logic_vector(31 downto 0);
-      ccr_out : out std_logic_vector(7 downto 0)
-   );
-end entity;
-
-architecture rtl of h8_alu is
-begin
-   process (op, sz, a, b, ccr_in)
+package body h8_alu_pkg is
+   procedure alu_calc(op : unsigned(4 downto 0); sz : std_logic_vector(1 downto 0); a, b : std_logic_vector(31 downto 0);
+                      ccr_in : std_logic_vector(7 downto 0);
+                      variable res : out std_logic_vector(31 downto 0); variable ccr_out : out std_logic_vector(7 downto 0)) is
       variable msb, hb   : integer range 0 to 31;              -- sign bit; half-carry: carry out of bit hb
       variable mask      : unsigned(31 downto 0);
       variable ua, ub, r : unsigned(31 downto 0);
@@ -202,7 +191,35 @@ begin
          when others =>                                          -- ALU_PASS
             r := ub;
       end case;
-      res <= std_logic_vector(r);
+      res := std_logic_vector(r);
+      ccr_out := c;
+   end procedure;
+end package body;
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use work.h8_alu_pkg.all;
+
+entity h8_alu is
+   port (
+      op      : in  unsigned(4 downto 0);
+      sz      : in  std_logic_vector(1 downto 0);
+      a, b    : in  std_logic_vector(31 downto 0);
+      ccr_in  : in  std_logic_vector(7 downto 0);
+      res     : out std_logic_vector(31 downto 0);
+      ccr_out : out std_logic_vector(7 downto 0)
+   );
+end entity;
+
+architecture rtl of h8_alu is
+begin
+   process (op, sz, a, b, ccr_in)
+      variable r : std_logic_vector(31 downto 0);
+      variable c : std_logic_vector(7 downto 0);
+   begin
+      alu_calc(op, sz, a, b, ccr_in, r, c);
+      res <= r;
       ccr_out <= c;
    end process;
 end architecture;
