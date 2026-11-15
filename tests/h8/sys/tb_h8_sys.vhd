@@ -1,9 +1,8 @@
 -- H8 system test: the core's H8 CPU (pocket/core/s12/h8_cpu.vhd) and peripherals (h8_periph.vhd) run Tekken 3's sound
 -- program from reset, against MAME's recording of the same boot (tools/mame/h8_shared.lua, tests/h8/ref):
 --   - the main CPU's writes to the shared RAM are played back at the frames MAME made them;
---   - the C352's registers are modelled as MAME's c352 does: they hold what the H8 writes, and a write to 0x280404
---     runs the key-ons (KEYON -> BUSY) and key-offs (BUSY and KEYOFF cleared); a sample playing to its end (which
---     needs the wave data) clears BUSY and sets KEYOFF at the frame MAME's H8 saw it (c352_ends.log, c352_ends.py);
+--   - the C352 is modelled as MAME's c352 (c352_model_pkg): its registers hold what the H8 writes, a write to 0x280404
+--     runs the key-ons and key-offs, and the voices step at 88.2 kHz to their sample ends (no wave data needed);
 --   - vblank (60 Hz, 564,480 clocks of 33.8688 MHz) drives IRQ1, ADTRG and port B bit 7, as on System 12;
 --   - every C352 write is logged (frame, address, value, byte lanes) to OUT, for tests/h8/sys/compare.py.
 -- Inputs idle (0x300000-3 read 0xFF00), DSW 0xFF, no JVS, no RTC (SCI1 receives 1s), analog inputs 0.
@@ -12,6 +11,7 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 use std.textio.all;
 use ieee.std_logic_textio.all;
+use work.c352_model_pkg.all;
 
 entity tb_h8_sys is
    generic (REF : string := "../ref"; OUTF : string := "c352_sim.log"; FRAMES : integer := 120);
@@ -40,7 +40,6 @@ architecture tb of tb_h8_sys is
 
    type rom_t is array (0 to 262143) of std_logic_vector(15 downto 0);
    type ram_t is array (0 to 65535 + 512) of std_logic_vector(7 downto 0);
-   type c352_t is array (0 to 16383) of std_logic_vector(15 downto 0);
    shared variable rom : rom_t;
    shared variable ram : ram_t := (others => x"00");
 begin
@@ -69,21 +68,21 @@ begin
 
    -- memory, C352, inputs; the frame clock and the main CPU's shared RAM writes
    mem : process (clk)
-      file mf, rf, logf : text;
+      file mf, logf : text;
       variable l, ol : line;
       variable opened : boolean := false;
       variable cyc : integer := 0;
       variable fr : integer := 0;
       variable a : unsigned(23 downto 0);
       variable i : integer;
-      variable c352 : c352_t := (others => x"0000");               -- word offsets: 0-0xFF voices, 0x200 control
+      variable c352 : c352_regs_t := (others => x"0000");          -- word offsets: 0-0xFF voices, 0x200 control
+      variable vpos : c352_pos_t := (others => (others => '0'));
+      variable vcnt : c352_cnt_t := (others => (others => '0'));
       variable off : integer;
       -- the next main CPU write and the next C352 read value, read ahead
       variable m_f : integer := -1;
       variable m_a : std_logic_vector(23 downto 0);
       variable m_v, m_m : std_logic_vector(15 downto 0);
-      variable r_f : integer := -1;                               -- the next sample end: frame, voice
-      variable r_n : integer;
       variable nw, nunm : integer := 0;
       variable w8 : std_logic_vector(7 downto 0);
       procedure next_main is
@@ -91,24 +90,18 @@ begin
          if endfile(mf) then m_f := integer'high;
          else readline(mf, l); read(l, m_f); hread(l, m_a); hread(l, m_v); hread(l, m_m); end if;
       end procedure;
-      procedure next_end is
-      begin
-         if endfile(rf) then r_f := integer'high;
-         else readline(rf, l); read(l, r_f); read(l, r_n); end if;
-      end procedure;
    begin
       if rising_edge(clk) then
          if not opened then
             file_open(mf, REF & "/main_shared.log", read_mode);
             file_open(logf, OUTF, write_mode);
-            file_open(rf, REF & "/c352_ends.log", read_mode);
-            next_main; next_end;
+            next_main;
             opened := true;
          end if;
          phi_ce <= not phi_ce;
 
          -- frames: vblank starts each frame (MAME counts a frame done there); the main CPU's writes of frame f are
-         -- played in its middle, and the sample ends MAME's H8 saw in frame f happen at its start
+         -- played in its middle
          if reset = '0' then
             cyc := cyc + 1;
             if cyc = T then
@@ -116,11 +109,7 @@ begin
                if fr >= FRAMES then done <= true; end if;
             end if;
             if fr >= 1 and cyc < VB then vblank <= '1'; else vblank <= '0'; end if;
-            while r_f <= fr loop
-               i := 8 * r_n + 3;
-               if c352(i)(15) = '1' then c352(i)(15) := '0'; c352(i)(13) := '1'; end if;
-               next_end;
-            end loop;
+            if cyc mod C352_CLKS = 0 then c352_tick(c352, vpos, vcnt); end if;
             if cyc = T / 2 then
                while m_f <= fr loop
                   i := to_integer(unsigned(m_a(15 downto 0)));
@@ -167,14 +156,7 @@ begin
                      if bus_be(1) = '1' then c352(off)(15 downto 8) := bus_wdata(15 downto 8); end if;
                      if bus_be(0) = '1' then c352(off)(7 downto 0) := bus_wdata(7 downto 0); end if;
                   elsif off = 16#202# and bus_be = "11" then          -- run the key-ons and key-offs
-                     for v in 0 to 31 loop
-                        if c352(8 * v + 3)(14) = '1' then
-                           c352(8 * v + 3)(15) := '1'; c352(8 * v + 3)(14) := '0'; c352(8 * v + 3)(11) := '0';
-                        end if;
-                        if c352(8 * v + 3)(13) = '1' then
-                           c352(8 * v + 3)(15) := '0'; c352(8 * v + 3)(13) := '0';
-                        end if;
-                     end loop;
+                     c352_keys(c352, vpos, vcnt);
                   end if;
                end if;
                if i >= 0 then

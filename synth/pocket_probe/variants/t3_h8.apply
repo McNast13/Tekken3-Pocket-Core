@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Tekken 3: the real H8/3002 in the C76's place (docs/H8.md, docs/CORE_T3.md), instead of t3_s12map's fake H8. Apply
+after t3_s12map. Grew out of the fit probe t3_h8_probe.apply (same memories and bus bridge).
+
+  c76.vhd   architecture h8: CPU (pocket/core/s12/h8_cpu.vhd) at clk (ce = 1), peripherals (h8_periph.vhd) at phi = the
+            C76 ce (clk / 2); irq0 (vblank) on IRQ1, ADTRG and port B bit 7. Memories (block RAM): 48 KB private RAM
+            (0x084000-0x08FFFF), the 512 B on-chip RAM, an 8 KB direct-mapped ROM cache (16-byte lines) filled from the
+            C76 SPROG window (the H8 program, data slot 6: tools/make_t3_roms.py packs its first 256 KB, in the H8's
+            byte order; above 0x40000 the program is all 0xFF and reads return that). Shared RAM (0x080000-0x083FFF ->
+            C76 bus 0x4000), C352 (0x280000 -> 0x2000) and inputs (0x300000-3 -> 0x1006 P2, 0x1004 P1, 0x1002 switches,
+            0x1000) go out over the C76's 8-bit bus, a word as two byte cycles (H8 even byte -> odd C76 byte: the
+            16-bit devices are little-endian there).
+  SYSTEM11.sv  the SPROG reader keeps the whole 32-bit SDRAM word and serves its 4 bytes (a cache line: 4 reads, not 16).
+Usage: t3_h8.apply OUTDIR   (S11_PROBES, after t3_s12map)
+"""
+import shutil
+import sys
+from pathlib import Path
+
+out = Path(sys.argv[1])
+ROOT = Path(__file__).resolve().parents[3]
+
+for n in ("h8_alu", "h8_cpu", "h8_periph"):
+    shutil.copy(ROOT / f"pocket/core/s12/{n}.vhd", out / f"rtl/{n}.vhd")
+q = out / "rtl/psx.qip"
+t = q.read_text()
+old = "set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) c76.vhd ]\n"
+assert t.count(old) == 1
+q.write_text(t.replace(old, "".join(
+    f"set_global_assignment -name VHDL_FILE [file join $::quartus(qip_path) {n}.vhd ]\n"
+    for n in ("h8_alu", "h8_cpu", "h8_periph")) + old))
+
+f = out / "rtl/c76.vhd"
+t = f.read_text()
+i = t.index("-- t3_s12map.apply: a fake H8")
+f.write_text(t[:i] + (ROOT / "pocket/core/s12/h8_c76.vhd").read_text())
+# ---- SYSTEM11.sv: the SPROG reader serves all 4 bytes of the word it fetched ----------------------------------------
+sv = out / "SYSTEM11.sv"
+t = sv.read_text()
+for old, new in (
+    ("reg  [7:0]  c76_sprog_data  = 8'h00;           // byte returned to c76_sound\n",
+     "reg  [31:0] sprog_word      = 32'h0;           // t3_h8.apply: the fetched word; its bytes go to c76_sound\n"
+     "wire [7:0]  c76_sprog_data  = sprog_word[{c76_sprog_addr[1:0], 3'b000} +: 8];\n"),
+    ("wire        c76_sprog_ready = (sprog_st == 2'd2) && (c76_sprog_addr[19:0] == sprog_fetched);",
+     "wire        c76_sprog_ready = (sprog_st == 2'd2) && (c76_sprog_addr[19:2] == sprog_fetched[19:2]);"),
+    ("""            case (sprog_bsel)
+              2'd0: c76_sprog_data <= cheats_din[7:0];
+              2'd1: c76_sprog_data <= cheats_din[15:8];
+              2'd2: c76_sprog_data <= cheats_din[23:16];
+              2'd3: c76_sprog_data <= cheats_din[31:24];
+            endcase
+""", "            sprog_word <= cheats_din;\n"),
+    ("   2'd2: if (~c76_sprog_rd || c76_sprog_addr[19:0] != sprog_fetched) begin",
+     "   2'd2: if (~c76_sprog_rd || c76_sprog_addr[19:2] != sprog_fetched[19:2]) begin"),
+):
+    assert t.count(old) == 1, old[:60]
+    t = t.replace(old, new)
+sv.write_text(t)
+print("t3_h8 applied")
