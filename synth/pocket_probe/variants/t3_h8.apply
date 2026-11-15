@@ -7,12 +7,21 @@ after t3_s12map. Grew out of the fit probe t3_h8_probe.apply (same memories and 
             (0x084000-0x08FFFF), the 512 B on-chip RAM, an 8 KB direct-mapped ROM cache (16-byte lines) filled from the
             C76 SPROG window (the H8 program, data slot 6: tools/make_t3_roms.py packs its first 256 KB, in the H8's
             byte order; above 0x40000 the program is all 0xFF and reads return that). Shared RAM (0x080000-0x083FFF ->
-            C76 bus 0x4000), C352 (0x280000 -> 0x2000) and inputs (0x300000-3 -> 0x1006 P2, 0x1004 P1, 0x1002 switches,
-            0x1000) go out over the C76's 8-bit bus, a word as two byte cycles (H8 even byte -> odd C76 byte: the
-            16-bit devices are little-endian there).
+            C76 bus 0x4000) and C352 (0x280000 -> 0x2000) go out over the C76's 8-bit bus, a word as two byte cycles (H8
+            even byte -> odd C76 byte: the 16-bit devices are little-endian there). The inputs (0x300000-3) and the DIP
+            switches (port 7) come in on the c76 entity's in_adc0-4, which a Tekken 3 core does not otherwise need.
   SYSTEM11.sv  the SPROG reader keeps the whole 32-bit SDRAM word and serves its 4 bytes (a cache line: 4 reads, not 16).
+               The System 12 input bytes as MAME's namcos12 in_r builds them for JAMMA, from the Pocket's controls (joy:
+               0 right, 1 left, 2 down, 3 up, 4-7 buttons 1-4, 10 start, 11 coin, 13 service), on in_adc0-3:
+                 0 P2, 1 P1: {start, JVS button 3, button 2, button 1, up, down, left, right}
+                 2 {service, test, coin 1, coin 2, buttons 7-8}   3 {P2 buttons 6, 5, 4, -, P1 buttons 6, 5, 4, -}
+               Tekken 3 (MAME INPUT_PORTS tekken3) has JVS button 3 unused and its kicks on JVS buttons 4 and 5, so the
+               Pocket's buttons 1-4 are left punch, right punch, left kick, right kick: kicks in byte 3. All active low.
+               in_adc4 = the DIP byte (port 7, MAME DSW): 0x80 Service Mode = the "DIP1 Test" setting, 0x40 Freeze =
+               "DIP2 Freeze".
 Usage: t3_h8.apply OUTDIR   (S11_PROBES, after t3_s12map)
 """
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -55,5 +64,20 @@ for old, new in (
 ):
     assert t.count(old) == 1, old[:60]
     t = t.replace(old, new)
+# the System 12 inputs and DIP switches (see the docstring), on the c76 entity's in_adc0-4
+old = "c76_sound c76snd\n"
+assert t.count(old) == 1
+t = t.replace(old, """// t3_h8.apply: System 12 inputs at the H8's 0x300000-3 (MAME namcos12 in_r, JAMMA) and its DIP switches (port 7)
+wire [7:0] t3_in_p2  = ~{joy2[10], 1'b0, joy2[5], joy2[4], joy2[3], joy2[2], joy2[1], joy2[0]};
+wire [7:0] t3_in_p1  = ~{joy[10],  1'b0, joy[5],  joy[4],  joy[3],  joy[2],  joy[1],  joy[0]};
+wire [7:0] t3_in_sys = ~{joy[13], 1'b0, joy[11], joy2[11], 4'b0000};
+wire [7:0] t3_in_ext = ~{1'b0, joy2[7], joy2[6], 1'b0, 1'b0, joy[7], joy[6], 1'b0};   // kicks: JVS buttons 5, 4
+wire [7:0] t3_dsw    = ~{status[96], status[97], 6'b000000};
+""" + old)
+n = 0
+for k, w in enumerate(("t3_in_p2", "t3_in_p1", "t3_in_sys", "t3_in_ext", "t3_dsw", "8'hFF", "8'hFF", "8'hFF")):
+    t, c = re.subn(r"   \.in_adc%d\s*\(.*?\),[^\n]*\n" % k, "   .in_adc%d   (%s),\n" % (k, w), t, count=1, flags=re.S)
+    n += c
+assert n == 8, n
 sv.write_text(t)
 print("t3_h8 applied")

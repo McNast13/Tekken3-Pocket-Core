@@ -15,7 +15,8 @@
                  0x306A and 0x3078, as tools/mame/h8_halt.lua H8_FAKE=1 does in MAME. No sound, no inputs.
   psx_top.vhd    GPU in the retail texture-page layout (not System 11's "gputype1"). The GPU already addresses 2 MB of VRAM
                  (10-bit rows, inherited from the ZN-1 core) and the PSRAM die holds 16 MB, so item 11 needs nothing more.
-  SYSTEM11.sv    loader: the wave ROM download grows to 8 MB. Data slots: pocket/dist data.json, tools/make_t3_roms.py.
+  SYSTEM11.sv    loader: the wave ROM download grows to 8 MB, and the C352 wave reader addresses all of it. Data slots:
+                 pocket/dist data.json, tools/make_t3_roms.py.
 Usage: t3_s12map.apply OUTDIR   (S11_PROBES, after pocket_emu.apply; not with t3_c76_stub)
 """
 import re
@@ -240,6 +241,10 @@ sub(sv, "(c76_sprog_req | c76_wave_req)", "(c76_sprog_req | c76_wave_req | s12_s
 # the wave ROM grows from 4 MB to 8 MB (SDRAM 0x2840000-0x303FFFF, above the banked ROM's end at 0x23FFFFF).
 sub(sv, "ramdownload_wraddr <= WAVE_START[26:0] + {5'b0, ioctl_addr[21:0]};",
     "ramdownload_wraddr <= WAVE_START[26:0] + {4'b0, ioctl_addr[22:0]};")
+# ... and the C352's wave reader addresses all 8 MB (it took 22 bits, so samples in tet1wave1.4, the upper 4 MB, were
+# read from the lower 4 MB: about a third of Tekken 3's sample selections, MAME c352 bank >= 0x40)
+sub(sv, "c76_wave_sdaddr <= WAVE_START + {5'b0, c76_wave_addr[21:2], 2'b00};",
+    "c76_wave_sdaddr <= WAVE_START + {4'b0, c76_wave_addr[22:2], 2'b00};")
 
 # ---- c76.vhd: the fake H8 --------------------------------------------------------------------------------------------
 f = out / "rtl/c76.vhd"

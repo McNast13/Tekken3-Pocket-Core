@@ -56,9 +56,8 @@ begin
                 ccr => ccr, irq => irq, irq_vec => irq_vec, irq_ack => irq_ack, irq_ack_vec => irq_ack_vec,
                 syscr_ue => syscr_ue,
                 irq_in => irq_in, adtrg => irq0,
-                adc_in => "00" & in_adc7 & "00" & in_adc6 & "00" & in_adc5 & "00" & in_adc4 & "00" & in_adc3 & "00" & in_adc2 &
-                          "00" & in_adc1 & "00" & in_adc0,
-                p4_in => x"FF", p6_in => x"FF", p7_in => x"FF", p8_in => x"EF", p9_in => x"FF", pa_in => x"FF", pb_in => pb_in,
+                adc_in => (others => '0'),                         -- MAME namcos12 ADC_0-3: unused, 0
+                p4_in => x"FF", p6_in => x"FF", p7_in => in_adc4, p8_in => x"EF", p9_in => x"FF", pa_in => x"FF", pb_in => pb_in,
                 p4_out => open, p6_out => open, p8_out => open, p9_out => open, pa_out => open, pb_out => open,
                 sci1_txd => open, sci1_sck => open, sci1_rxd => '1');
    bus_ack <= per_ack or mem_ack;
@@ -106,9 +105,13 @@ begin
                         if bus_wr = '1' then mem_ack <= '1';
                         elsif a >= 16#040000# then mem_q <= x"FFFF"; mem_ack <= '1';   -- the program's 0xFF tail
                         else rc_a <= to_integer(a(12 downto 1)); tg_a <= to_integer(a(12 downto 4)); st <= RAMWAIT; st_next <= ROMLOOK; end if;
-                     elsif (a >= 16#080000# and a <= 16#083FFF#) or (a >= 16#280000# and a <= 16#287FFF#) or
-                           (a >= 16#300000# and a <= 16#300003#) then
+                     elsif (a >= 16#080000# and a <= 16#083FFF#) or (a >= 16#280000# and a <= 16#287FFF#) then
                         xb <= 0; st <= EXTB;
+                     elsif a >= 16#300000# and a <= 16#300003# then
+                        -- the inputs (MAME namcos12 in_r, JAMMA): 0 P2, 1 P1, 2 service / test / coins, 3 kicks; t3_h8.apply
+                        -- brings the four bytes in on in_adc0-3 (a byte read takes its lane)
+                        if a(1) = '0' then mem_q <= in_adc0 & in_adc1; else mem_q <= in_adc2 & in_adc3; end if;
+                        mem_ack <= '1';
                      else
                         mem_q <= x"0000"; mem_ack <= '1';                 -- wait-state writes, unmapped
                      end if;
@@ -149,15 +152,7 @@ begin
                   end if;
                when EXTB =>                                              -- outside: one or two byte cycles
                   if erd = '0' and ewr = '0' then
-                     if a >= 16#300000# then
-                        -- MAME namcos12 in_r: 0 P2, 1 P1, 2 service / test / coins, 3 buttons 4-6
-                        case a(1 downto 0) is
-                           when "00" => ea <= x"001006";
-                           when "01" => ea <= x"001004";
-                           when "10" => ea <= x"001002";
-                           when others => ea <= x"001000";
-                        end case;
-                     elsif a >= 16#280000# then
+                     if a >= 16#280000# then
                         ea <= x"002" & std_logic_vector(a(11 downto 1)) & not (bus_addr(0) xor std_logic(to_unsigned(xb, 1)(0)));
                      else
                         ea <= x"00" & std_logic_vector("01" & a(13 downto 1)) & not (bus_addr(0) xor std_logic(to_unsigned(xb, 1)(0)));
