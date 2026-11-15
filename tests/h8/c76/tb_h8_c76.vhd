@@ -15,12 +15,13 @@ use ieee.std_logic_textio.all;
 use work.c352_model_pkg.all;
 
 entity tb_h8_c76 is
-   generic (REF : string := "../ref"; OUTF : string := "c352_sim.log"; FRAMES : integer := 120);
+   -- SPROG_LAT: clocks from a SPROG word request to its data (the SDRAM, idle ~9; busier in a fight)
+   generic (REF : string := "../ref"; OUTF : string := "c352_sim.log"; FRAMES : integer := 120;
+            SPROG_LAT : integer := 9);
 end entity;
 
 architecture tb of tb_h8_c76 is
    constant T  : integer := 564480;        -- clocks per frame
-   constant SPROG_LAT : integer := 9;      -- clocks from a SPROG word request to its data
    signal clk : std_logic := '0';
    signal reset : std_logic := '1';
    signal done : boolean := false;
@@ -31,6 +32,7 @@ architecture tb of tb_h8_c76 is
    signal ext_rd, ext_wr, ext_ready : std_logic;
    signal ext_addr_prev : std_logic_vector(23 downto 0) := (others => '1');
    signal sp_word : integer := -1;          -- SPROG word fetched (byte address / 4)
+   signal sp_fetches : integer := 0;        -- SPROG word fetches (SDRAM reads)
    signal dbg_pc : std_logic_vector(23 downto 0);
    signal dbg_valid : std_logic;
 
@@ -112,11 +114,15 @@ begin
          end if;
          ce <= not ce;
          if ce = '1' then ext_addr_prev <= ext_addr; end if;
-         -- SPROG: a word some clocks after it is asked for
+         -- SPROG: a word some clocks after it is asked for; as SYSTEM11.sv's reader (t3_h8.apply), the word is kept only
+         -- while rd stays high (rd low ends the access, and the next read fetches again)
          if ext_rd = '1' and sel(ext_addr, 16#200000#, 16#2FFFFF#) and
             sp_word /= to_integer(unsigned(ext_addr(19 downto 2))) then
-            if wait_sp = SPROG_LAT then sp_word <= to_integer(unsigned(ext_addr(19 downto 2))); wait_sp := 0;
+            if wait_sp = SPROG_LAT then
+               sp_word <= to_integer(unsigned(ext_addr(19 downto 2))); wait_sp := 0; sp_fetches <= sp_fetches + 1;
             else wait_sp := wait_sp + 1; end if;
+         elsif ext_rd = '0' then
+            sp_word <= -1; wait_sp := 0;
          end if;
          if reset = '0' then
             cyc := cyc + 1;
@@ -172,21 +178,38 @@ begin
       alias h8_rd is <<signal .tb_h8_c76.dut.bus_rd : std_logic>>;
       alias h8_ack is <<signal .tb_h8_c76.dut.bus_ack : std_logic>>;
       alias h8_addr is <<signal .tb_h8_c76.dut.bus_addr : std_logic_vector(23 downto 0)>>;
-      variable nrom, nfill, nbus, nbusy, ncyc, sec : integer := 0;
+      variable nrom, nfill, nbus, nbusy, ncyc, sec, nword, sp_f_d : integer := 0;
+      -- the sound-command lock (shared 0x3006, the main CPU waits while it is 1): how long the H8 holds it
+      variable lk_on : boolean := false;
+      variable lk_t, lk_max, lk_sum, lk_n, lk_off : integer := 0;
       variable pc : integer;
    begin
       if rising_edge(clk) and reset = '0' then
          ncyc := ncyc + 1;
          if h8_rd = '1' and h8_ack = '1' and unsigned(h8_addr) < 16#080000# then nrom := nrom + 1; end if;
          if ext_rd = '1' and ext_ready = '1' and ce = '1' and sel(ext_addr, 16#200000#, 16#2FFFFF#) then nfill := nfill + 1; end if;
+         if sp_fetches /= sp_f_d then nword := nword + 1; end if;
+         sp_f_d := sp_fetches;
          if (ext_rd = '1' or ext_wr = '1') and ext_ready = '1' and ce = '1' then nbus := nbus + 1; end if;
          pc := to_integer(unsigned(dbg_pc));
          if pc < 16#158A# or pc > 16#1591# then nbusy := nbusy + 1; end if;
+         lk_t := lk_t + 1;
+         -- the H8 writes 0x0001 / 0x0000 to 0x083006: the low byte goes to C76 0x7006
+         if ext_wr = '1' and ext_ready = '1' and ce = '1' and ext_addr = x"007006" then
+            if ext_dout /= x"00" then lk_on := true; lk_t := 0;
+            elsif lk_on then
+               lk_on := false; lk_sum := lk_sum + lk_t; lk_n := lk_n + 1;
+               if lk_t > lk_max then lk_max := lk_t; end if;
+            end if;
+         end if;
          if ncyc = 60 * T then
             report "second " & integer'image(sec) & ": ROM reads " & integer'image(nrom) & ", SPROG bytes " &
-                   integer'image(nfill) & ", C76 bus bytes " & integer'image(nbus) & ", busy " &
-                   integer'image(nbusy / (60 * T / 100)) & "%";
-            sec := sec + 1; ncyc := 0; nrom := 0; nfill := 0; nbus := 0; nbusy := 0;
+                   integer'image(nfill) & ", SPROG word fetches " & integer'image(nword) & ", C76 bus bytes " & integer'image(nbus) & ", busy " &
+                   integer'image(nbusy / (60 * T / 100)) & "%, lock 0x3006 held avg " &
+                   integer'image(lk_sum / (lk_n + 1) / 34) & " us max " & integer'image(lk_max / 34) & " us (" &
+                   integer'image(lk_n) & ")";
+            lk_sum := 0; lk_n := 0; lk_max := 0;
+            sec := sec + 1; ncyc := 0; nrom := 0; nfill := 0; nbus := 0; nbusy := 0; nword := 0;
          end if;
       end if;
    end process;

@@ -123,11 +123,17 @@ begin
                      xb <= 0; st <= FILL;
                   end if;
                when FILL =>                                              -- 16 bytes from the SPROG window
+                  -- rd stays high for the whole line, the address stepping a byte at a time: SYSTEM11.sv's reader keeps
+                  -- a fetched word while rd is held, so a line is 4 SDRAM reads (dropping rd between bytes made it 16)
                   if erd = '0' then
                      ea <= x"2" & '0' & bus_addr(18 downto 4) & std_logic_vector(to_unsigned(xb, 4));
                      erd <= '1';
                   elsif ce = '1' and ext_ready = '1' then
-                     erd <= '0';
+                     if xb /= 15 then
+                        ea <= x"2" & '0' & bus_addr(18 downto 4) & std_logic_vector(to_unsigned(xb + 1, 4));
+                     else
+                        erd <= '0';
+                     end if;
                      if xb mod 2 = 0 then
                         xhi <= ext_din;
                      else

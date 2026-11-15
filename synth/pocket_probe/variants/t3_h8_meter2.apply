@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Measurement, second meter (after t3_h8_meter): the same signals counted per second of clk_1x (33,868,800 clocks), not per
+64 vblanks, to check whether the H8 really does its frame work twice per video frame (t3h8meter1: frame routine 0x15A0
+~131 runs per 64 vblank edges, game frames 66). Shown on the diagnostic screen until the next second ends:
+  5 [255:224] = {vblank edges (PK_VID_VBL rising), H8 vblank-handler entries (PC 0x00398A, IRQ1 / vector 13)}
+  7 [223:192] = {H8 timer 0 handler entries (PC 0x003850, vector 26), timer 1 (PC 0x0038E6, vector 30)}
+  6 [191:160] = {H8 frame-routine runs (PC 0x0015A0), game frames (main CPU leaves its vsync wait, PC 0x801BBC78)}
+  8 [159:128] = {H8 busy clocks / 1024, H8 program-word (SPROG) reads / 16}
+  9 [127:96]  = {main CPU clocks spinning on the 0x3006 lock / 1024, the H8's PC at the end of the second [15:0]}
+  1 [31:0]    = {seconds completed [31:16], 0x7E58 [15:0]}
+MAME: 60 vblanks, 60 vector-13 entries, ~120 timer entries in all, 60 frame-routine runs per second. Measurement build:
+not for release. c76_sound's C76 derail latch is switched off (as t3_h8_meter).
+Usage: t3_h8_meter2.apply OUTDIR   (S11_PROBES, after t3_h8; not with t3_h8_meter)
+"""
+import sys
+from pathlib import Path
+
+f = Path(sys.argv[1]) / "SYSTEM11.sv"
+t = f.read_text()
+old = "assign PK_DBG2 = s11_boot_dbg;"
+assert t.count(old) == 1, "PK_DBG2 assignment not found"
+t = t.replace(old, r"""// t3_h8_meter2.apply: per-second H8 / main CPU event counts on the diagnostic rows (see the variant's docstring)
+reg  [25:0] hm_t = 0;
+reg  [15:0] hm_vbl = 0, hm_v13 = 0, hm_v26 = 0, hm_v30 = 0, hm_frm = 0, hm_gf = 0, hm_sec = 0;
+reg  [31:0] hm_busy = 0, hm_spin = 0, hm_sp_n = 0;
+reg         hm_vbl_d = 0, hm_rdy_d = 0, hm_i13 = 0, hm_i26 = 0, hm_i30 = 0, hm_i15a0 = 0, hm_iexit = 0;
+reg  [255:0] hm_rows = 0;
+wire [23:0] hm_h8pc = c76_pc;
+wire [31:0] hm_mpc = zn_dbg_mipspc;
+always @(posedge clk_1x) begin
+   hm_vbl_d <= PK_VID_VBL;
+   if (PK_VID_VBL && !hm_vbl_d) hm_vbl <= hm_vbl + 1'd1;
+   hm_i13 <= (hm_h8pc == 24'h00398A);   if (hm_h8pc == 24'h00398A && !hm_i13) hm_v13 <= hm_v13 + 1'd1;
+   hm_i26 <= (hm_h8pc == 24'h003850);   if (hm_h8pc == 24'h003850 && !hm_i26) hm_v26 <= hm_v26 + 1'd1;
+   hm_i30 <= (hm_h8pc == 24'h0038E6);   if (hm_h8pc == 24'h0038E6 && !hm_i30) hm_v30 <= hm_v30 + 1'd1;
+   hm_i15a0 <= (hm_h8pc == 24'h0015A0); if (hm_h8pc == 24'h0015A0 && !hm_i15a0) hm_frm <= hm_frm + 1'd1;
+   hm_iexit <= (hm_mpc == 32'h801BBC78); if (hm_mpc == 32'h801BBC78 && !hm_iexit) hm_gf <= hm_gf + 1'd1;
+   if (hm_h8pc < 24'h00158A || hm_h8pc > 24'h001591) hm_busy <= hm_busy + 1'd1;
+   if (hm_mpc == 32'h801BBC90 || hm_mpc == 32'h801BBC94 || hm_mpc == 32'h801BBC98 || hm_mpc == 32'h801BBC9C)
+      hm_spin <= hm_spin + 1'd1;
+   hm_rdy_d <= c76_sprog_rd && c76_sprog_ready;
+   if (c76_sprog_rd && c76_sprog_ready && !hm_rdy_d) hm_sp_n <= hm_sp_n + 1'd1;
+   if (hm_t == 26'd33868799) begin
+      hm_t <= 0;
+      hm_sec <= hm_sec + 1'd1;
+      hm_rows <= {hm_vbl, hm_v13, hm_v26, hm_v30, hm_frm, hm_gf, hm_busy[25:10], hm_sp_n[19:4],
+                  hm_spin[25:10], hm_h8pc[15:0], 64'd0, hm_sec + 1'd1, 16'h7E58};
+      hm_vbl <= 0; hm_v13 <= 0; hm_v26 <= 0; hm_v30 <= 0; hm_frm <= 0; hm_gf <= 0;
+      hm_busy <= 0; hm_spin <= 0; hm_sp_n <= 0;
+   end else
+      hm_t <= hm_t + 1'd1;
+end
+assign PK_DBG2 = {32'd0, hm_rows};""")
+f.write_text(t)
+# c76_sound's C76 "derail" latch freezes the reported PC if it ever equals 0x00C000 (a C76 crash address): the H8's code
+# runs there, so it is switched off and c76_pc stays the H8's live PC
+c = Path(sys.argv[1]) / "rtl/c76_sound.vhd"
+t = c.read_text()
+old = """if dbg_derail_taken = '0' and unsigned(dbg_pc_i) = x"00C000" then"""
+assert t.count(old) == 1, "derail latch not found"
+c.write_text(t.replace(old, "if false then   -- t3_h8_meter2.apply: no C76 derail latch on the H8"))
+print("t3_h8_meter2 applied")

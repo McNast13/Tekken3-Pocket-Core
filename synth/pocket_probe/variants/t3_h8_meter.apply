@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Measurement: why are Tekken 3's sound effects late (and fights slow) with the real H8 (t3_h8.apply)? Counts per window of
+64 vblanks (~1 s), shown on the diagnostic screen (setting "Diagnostic screen") until the next window ends. From the PCs
+the diagnostic screen already has (zn_dbg_mipspc, the H8's c76_pc) and the H8's program-ROM (SPROG) read handshake:
+  H8 busy      clocks the H8 is outside its idle loop (0x158A-0x1591)
+  H8 frames    entries into its vblank work (PC 0x0015A0, the frame counter at shared 0x300E; 64 = every vblank)
+  H8 lock      clocks between setting and clearing the sound-command lock (PC 0x037E .. 0x03AC; MAME: ~100 us)
+  SPROG        H8 program-ROM word reads (cache line fills) and the clocks they wait for the SDRAM (total, worst one)
+  main spin    clocks the main CPU waits on the lock (PC 0x801BBC90); game frames = exits of its vsync wait (0x801BBC78)
+Rows (PK_DBG2), all clk_1x clocks (33.8688 MHz), "/16" = in units of 16 clocks, "per frame" = window total / 64:
+  5 [255:224] = {H8 busy per frame / 16, main spin per frame / 16}
+  7 [223:192] = {SPROG reads per frame, SPROG wait clocks per frame / 16}
+  6 [191:160] = {SPROG worst wait (clocks, saturating), main spin worst frame / 16}
+  8 [159:128] = {H8 vblank-work entries in the window, H8 lock clocks per frame / 16}
+  9 [127:96]  = {game frames in the window (64 = 60 fps, 32 = 30 fps), H8 lock worst / 16}
+  1 [31:0]    = {windows completed [31:16], 0x7E57 [15:0]}
+A frame is 564,480 clocks = 0x89D0 in units of 16. Measurement build: not for release.
+c76_sound's C76 derail latch is switched off (it would freeze c76_pc at an H8 PC of 0x00C000).
+Usage: t3_h8_meter.apply OUTDIR   (S11_PROBES, after t3_h8)
+"""
+import sys
+from pathlib import Path
+
+f = Path(sys.argv[1]) / "SYSTEM11.sv"
+t = f.read_text()
+old = "assign PK_DBG2 = s11_boot_dbg;"
+assert t.count(old) == 1, "PK_DBG2 assignment not found"
+t = t.replace(old, r"""// t3_h8_meter.apply: H8 / main CPU timing meter on the diagnostic rows (see the variant's docstring)
+reg  [31:0] hm_busy = 0, hm_spin = 0, hm_sp_n = 0, hm_sp_w = 0, hm_lock = 0;
+reg  [15:0] hm_frm = 0, hm_gf = 0, hm_win = 0, hm_spw_max = 0, hm_lk = 0, hm_lk_max = 0;
+reg  [31:0] hm_spf = 0, hm_spf_max = 0;
+reg  [15:0] hm_sp_run = 0;
+reg  [6:0]  hm_n = 0;
+reg         hm_vbl_d = 0, hm_rd_d = 0, hm_rdy_d = 0, hm_in15a0 = 0, hm_inexit = 0, hm_inlock = 0;
+reg  [255:0] hm_rows = 0;
+wire [23:0] hm_h8pc = c76_pc;
+wire [31:0] hm_mpc = zn_dbg_mipspc;
+always @(posedge clk_1x) begin
+   // H8 busy: outside the idle loop
+   if (hm_h8pc < 24'h00158A || hm_h8pc > 24'h001591) hm_busy <= hm_busy + 1'd1;
+   // H8 vblank work: entries to 0x15A0
+   hm_in15a0 <= (hm_h8pc == 24'h0015A0);
+   if (hm_h8pc == 24'h0015A0 && !hm_in15a0) hm_frm <= hm_frm + 1'd1;
+   // H8 lock 0x37E .. 0x3AC
+   hm_inlock <= (hm_h8pc >= 24'h00037E && hm_h8pc <= 24'h0003AC);
+   if (hm_h8pc >= 24'h00037E && hm_h8pc <= 24'h0003AC) begin
+      hm_lock <= hm_lock + 1'd1;
+      if (hm_lk != 16'hFFFF) hm_lk <= hm_lk + 1'd1;
+   end else if (hm_inlock) begin
+      if (hm_lk > hm_lk_max) hm_lk_max <= hm_lk;
+      hm_lk <= 0;
+   end
+   // SPROG reads: a word fetch waits while rd is high and ready low
+   if (c76_sprog_rd && !c76_sprog_ready) begin
+      hm_sp_w <= hm_sp_w + 1'd1;
+      if (hm_sp_run != 16'hFFFF) hm_sp_run <= hm_sp_run + 1'd1;
+   end
+   if (c76_sprog_rd && c76_sprog_ready && hm_sp_run != 0) begin
+      hm_sp_n <= hm_sp_n + 1'd1;
+      if (hm_sp_run > hm_spw_max) hm_spw_max <= hm_sp_run;
+      hm_sp_run <= 0;
+   end
+   // main CPU: spin on the lock, game frames
+   if (hm_mpc == 32'h801BBC90 || hm_mpc == 32'h801BBC94 || hm_mpc == 32'h801BBC98 || hm_mpc == 32'h801BBC9C) begin
+      hm_spin <= hm_spin + 1'd1;
+      hm_spf <= hm_spf + 1'd1;
+   end
+   hm_inexit <= (hm_mpc == 32'h801BBC78);
+   if (hm_mpc == 32'h801BBC78 && !hm_inexit) hm_gf <= hm_gf + 1'd1;
+   // windows of 64 vblanks
+   hm_vbl_d <= PK_VID_VBL;
+   if (PK_VID_VBL && !hm_vbl_d) begin
+      if (hm_spf > hm_spf_max) hm_spf_max <= hm_spf;
+      hm_spf <= 0;
+      hm_n <= hm_n + 1'd1;
+      if (hm_n == 7'd63) begin
+         hm_n <= 0;
+         hm_win <= hm_win + 1'd1;
+         hm_rows <= {hm_busy[25:10], hm_spin[25:10],
+                     hm_sp_n[21:6], hm_sp_w[25:10],
+                     hm_spw_max, hm_spf_max[19:4],
+                     hm_frm, hm_lock[25:10],
+                     hm_gf, 4'd0, hm_lk_max[15:4],
+                     64'd0,
+                     hm_win + 1'd1, 16'h7E57};
+         hm_busy <= 0; hm_spin <= 0; hm_sp_n <= 0; hm_sp_w <= 0; hm_lock <= 0;
+         hm_frm <= 0; hm_gf <= 0; hm_spw_max <= 0; hm_spf_max <= 0; hm_lk_max <= 0;
+      end
+   end
+end
+assign PK_DBG2 = {32'd0, hm_rows};""")
+f.write_text(t)
+# c76_sound's C76 "derail" latch freezes the reported PC if it ever equals 0x00C000 (a C76 crash address): the H8's code
+# runs there, so it is switched off and c76_pc stays the H8's live PC
+c = Path(sys.argv[1]) / "rtl/c76_sound.vhd"
+t = c.read_text()
+old = """if dbg_derail_taken = '0' and unsigned(dbg_pc_i) = x"00C000" then"""
+assert t.count(old) == 1, "derail latch not found"
+c.write_text(t.replace(old, "if false then   -- t3_h8_meter.apply: no C76 derail latch on the H8"))
+print("t3_h8_meter applied")

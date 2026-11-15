@@ -7,6 +7,8 @@
 -- and, from the same run, $H8_OUT/c352.log: the H8's C352 writes (frame, address, value, mask), what the test compares;
 -- $H8_OUT/c352_reads.log: what the H8 reads from the C352 (voice flags), each time it differs from the last read of
 -- that address (frame, address, value), for the testbench to answer reads with.
+-- H8_COIN=frame: insert a coin then, press P1 start 2 s later and from 5 s later keep pressing P1's buttons and
+-- left / right (a coin-up fight, for the sound effects).
 local out = os.getenv("H8_OUT") or "."
 local fh = io.open(out .. "/main_shared.log", "w")
 local ch = io.open(out .. "/c352.log", "w")
@@ -15,7 +17,26 @@ local last = {}
 local f = 0
 local sp = manager.machine.devices[":maincpu"].spaces["program"]
 
-emu.register_frame_done(function() f = f + 1 end)
+local coin = tonumber(os.getenv("H8_COIN") or "0")
+local fields = {}
+for _, port in pairs(manager.machine.ioport.ports) do
+   for name, fld in pairs(port.fields) do fields[name] = fld end
+end
+local mash = {"P1 Button 1", "P1 Button 2", "P1 Button 3", "P1 Button 4", "P1 Right", "P1 Left"}
+local function set(n, v) if fields[n] then fields[n]:set_value(v) end end
+
+emu.register_frame_done(function()
+   f = f + 1
+   if coin > 0 then
+      set("Coin 1", (f >= coin and f < coin + 6) and 1 or 0)
+      local st = (f >= coin + 120 and f < coin + 126) or (f >= coin + 300 and f % 240 < 4)
+      set("1 Player Start", st and 1 or 0)
+      if f >= coin + 300 then
+         local k = (f // 8) % #mash + 1
+         for i, n in ipairs(mash) do set(n, (i == k and f % 8 < 4) and 1 or 0) end
+      end
+   end
+end)
 
 h8_shared_tap = sp:install_write_tap(0x1f080000, 0x1f083fff, "main_shared", function(offset, data, mask)
    -- the main CPU's bus is 32-bit little-endian: each 16-bit half is one H8 word (same byte address)
