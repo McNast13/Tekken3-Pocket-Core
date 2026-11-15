@@ -1,8 +1,9 @@
 # Tekken 3 (Namco System 12) for Analogue Pocket (openFPGA)
 
-**Status:** early development. Tekken 3's attract mode runs on the Pocket, but slowly, with no sound and no controls. The
-sound/input CPU (H8) is faked for now, and the game reaches full speed only some of the time, with an experimental data cache.
-Not playable yet; see [docs/CORE_T3.md](docs/CORE_T3.md) for progress.
+**Status:** early development. Tekken 3 runs on the Pocket with sound and working controls, through the real H8
+sound/input CPU (since 2026-11-15), but it is not playable at full speed yet: fights run at 30 fps, half speed. Attract
+scenes reach 41-55 fps with the experimental CPU turbo setting "Mem + compute + cache". The sound is close to MAME's but
+not yet checked in detail. See [docs/CORE_T3.md](docs/CORE_T3.md) for progress and [docs/H8.md](docs/H8.md) for the H8.
 
 A single-game core for **Tekken 3** on the Analogue Pocket, following the
 [Namco System 11 port](https://github.com/McNast13/NamcoSystem11-Pocket). System 12 is a faster System 11

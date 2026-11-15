@@ -108,3 +108,29 @@ core turn the cache off has not shown up on Tekken 3 so far.
 MDEC (movie decoder): Tekken 3 uses it, so it stays (619 ALMs). MAME, 2026-11-14: 1,330 MDEC decode commands (0x3Axxxxxx
 at 0x1F801820) and as many DMA channel 0 and 1 starts in 20 minutes of attract mode, 532 in a coin-started game; they come
 in bursts (movie clips), not every frame.
+
+## Milestone 2: sound and controls through the real H8 (2026-11-15)
+
+The fake H8 is replaced by a real H8/300H in the C76's place (docs/H8.md for the CPU, peripherals and their tests):
+`pocket/core/s12/h8_c76.vhd`, variant `t3_h8.apply` after `t3_s12map.apply`. The H8 program (`tet1vere.11s`, first
+256 KB in the H8's byte order) is data slot 6, "H8 program" (`tools/make_t3_roms.py` `rom_6.bin`), read from SDRAM through
+an 8 KB cache. Builds on the Pocket, in order:
+
+| Build | Change | On the Pocket |
+|---|---|---|
+| t3h8snd1 | first real H8 (17,454 ALMs) | boot sounds and attract music play; fights slow, effects "late", only punches work, data-cache turbo setting missing from the menu |
+| t3h8meter1, t3h8meter2 | timing meters on the diagnostic screen (`t3_h8_meter*.apply`) | the H8 keeps MAME's rates (vblank 60/s, tempo timers ~120/s each, frame routine 60/s), is 84-86% idle, its program reads wait ~9 clocks, and the main CPU never waits on its sound-command lock (shared 0x3006); fights run at 30 fps |
+| t3h8snd2 | cache line fill fixed (4 SDRAM reads a line, was 16); turbo option renamed "Mem + compute + cache" (the 29-character name did not show) | option visible; fights no faster with it; effects "at half speed" |
+| t3h8snd4 seed 22 | C352 wave reader widened to 8 MB (it took 22 bits: samples in the upper 4 MB, about a third of Tekken 3's in MAME, played the wrong data); the System 12 input bytes as MAME's in_r builds them (Tekken 3's kicks are JVS buttons 4 and 5, read at 0x300003) | kicks work; sound close to normal; best speed with "Mem + compute + cache" |
+
+t3h8snd4 seed 22: 17,440 / 18,480 ALMs, 285 / 308 M10K, 42 / 66 DSP; timing met everywhere except one setup path in the
+diagnostic overlay (video clock, Slow 0C -0.509 ns). Seeds 3 and 99 of the same design failed on the GPU clock, so seeds
+are compared for every changed design.
+
+Open:
+- Speed: fights stay at 30 fps even with the data cache (the cache's 41-55 fps was measured in attract scenes only). Next:
+  a frame-rate / stall probe build in a fight, then the CPU work (the real System 12 runs its CPU at 50.8 MHz, 1.5x the
+  core's).
+- Sound accuracy: by ear "close to normal"; not compared with MAME on the Pocket. In simulation 157 / 160 C352 registers
+  follow MAME's over 16 s (one note goes to a different voice at 13 s).
+- Space: 1,040 ALMs free; LABs are nearly all in use.
