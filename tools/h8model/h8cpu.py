@@ -138,6 +138,9 @@ class H8:
         self.PC = pc + 2
         self.PIR = ir & 0xffff
 
+    def trapa_setup(self):                        # h83002: trapa #n uses vectors 8-11
+        return 8
+
     def irq_setup(self):                          # h83002_device::irq_setup
         self.CCR |= h8ops.F_I if self.syscr & 0x08 else h8ops.F_I | h8ops.F_UI
 
