@@ -15,7 +15,7 @@ library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
-entity h8_periph is
+entity h8_periph_model is
    port (
       clk       : in  std_logic;
       ce        : in  std_logic;                        -- H8 system clock (phi) enable
@@ -51,7 +51,7 @@ entity h8_periph is
    );
 end entity;
 
-architecture arch of h8_periph is
+architecture arch of h8_periph_model is
    type u16a is array (0 to 3) of unsigned(15 downto 0);
    type u8a  is array (0 to 3) of std_logic_vector(7 downto 0);
    signal tcnt, gra, grb : u16a := (others => (others => '0'));

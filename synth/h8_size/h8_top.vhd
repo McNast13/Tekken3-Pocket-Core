@@ -1,5 +1,5 @@
--- H8/3002 sizing model: the CPU model (h8_size) and the peripheral model (h8_periph) wired together, so the fit report
--- gives the whole H8's ALMs and timing. Not a working H8.
+-- H8/3002 sizing model: the CPU model (h8_size) and the peripheral model (h8_periph_model) wired together, so the
+-- fit report gives the whole H8's ALMs and timing. Not a working H8.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -55,7 +55,7 @@ begin
       irq => irq, irq_vec => vec, irq_ack => ack
    );
 
-   per : entity work.h8_periph
+   per : entity work.h8_periph_model
    port map (
       clk => clk, ce => ce, reset => reset,
       addr => addr, din => dout, dout => pdout, rd => rd, wr => wr, be => be,

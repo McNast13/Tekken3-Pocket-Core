@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Compile an H8 sizing model alone in the same Quartus image as the core (docs/LOCAL_BUILD.md).
-# usage: run.sh [top]    top = h8_size (CPU, default), h8_periph (peripherals), h8_top (both)
-#                        or h8_cpu_size (the real CPU, pocket/core/s12/h8_cpu.vhd)
+# usage: run.sh [top]    top = h8_size (CPU model, default), h8_periph_model (peripheral model), h8_top (both models),
+#                        h8_cpu_size (the real CPU, pocket/core/s12/h8_cpu.vhd) or h8_sys_size (real CPU + peripherals)
 # Every port except clk is a virtual pin; clk is constrained to clk_1x (h8_size.sdc).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -13,7 +13,8 @@ docker info >/dev/null 2>&1 || { echo "docker daemon not running (open OrbStack)
   echo 'set_global_assignment -name DEVICE 5CEBA4F23C8'
   echo "set_global_assignment -name TOP_LEVEL_ENTITY $top"
   echo 'set_global_assignment -name VHDL_INPUT_VERSION VHDL_2008'
-  for f in ../../pocket/core/s12/h8_alu.vhd ../../pocket/core/s12/h8_cpu.vhd h8_size.vhd h8_periph.vhd h8_top.vhd h8_cpu_size.vhd; do echo "set_global_assignment -name VHDL_FILE $f"; done
+  for f in ../../pocket/core/s12/h8_alu.vhd ../../pocket/core/s12/h8_cpu.vhd ../../pocket/core/s12/h8_periph.vhd h8_size.vhd h8_periph.vhd h8_top.vhd \
+           h8_cpu_size.vhd h8_sys_size.vhd; do echo "set_global_assignment -name VHDL_FILE $f"; done
   echo 'set_global_assignment -name SDC_FILE h8_size.sdc'
   echo 'set_global_assignment -name SEED 99'
   echo 'set_global_assignment -name NUM_PARALLEL_PROCESSORS 2'

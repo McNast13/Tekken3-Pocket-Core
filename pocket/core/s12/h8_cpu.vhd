@@ -13,7 +13,8 @@
 -- bus_wdata) is held until bus_ack, for one clock; read data is taken from bus_rdata in that clock. bus_be: "11" word
 -- (bus_addr even), "10" the even byte, "01" the odd byte; for a byte write the byte is on both lanes.
 -- Interrupts: irq with irq_vec is taken between instructions (the interrupt controller has already applied the
--- CCR masks); irq_ack pulses as the vector is read. syscr_ue is SYSCR's UE bit: 0 = an interrupt sets I and UI.
+-- CCR masks); irq_ack pulses (with irq_ack_vec) as the vector is read. syscr_ue is SYSCR's UE bit: 0 = an interrupt
+-- sets I and UI.
 -- Test start: with load_state = 1 during reset, the CPU starts at load_pc with load_ccr and load_er instead of
 -- reading the reset vector.
 library ieee;
@@ -34,6 +35,7 @@ entity h8_cpu is
       irq        : in  std_logic;
       irq_vec    : in  std_logic_vector(5 downto 0);
       irq_ack    : out std_logic;
+      irq_ack_vec : out std_logic_vector(5 downto 0);     -- the vector being taken (valid with irq_ack)
       syscr_ue   : in  std_logic;
       ccr_o      : out std_logic_vector(7 downto 0);
       -- test / debug
@@ -238,6 +240,7 @@ begin
    bus_wr    <= b_wr;
    bus_be    <= b_be;
    ccr_o     <= ccr;
+   irq_ack_vec <= std_logic_vector(vecn);
    dbg_pc    <= std_logic_vector(ipc);
    dbg_ccr   <= ccr;
    dbg_illegal <= illegal;
