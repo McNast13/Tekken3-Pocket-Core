@@ -240,12 +240,17 @@ module core_top (
     wire        reset_n;
     wire [31:0] cmd_bridge_rd_data;
     assign bridge_endian_little = 1'b1;     // data-slot words arrive little-endian: byte 0 of the file = bits [7:0]
+    // The source is chosen when the host asks (bridge_rd), not from the live address: the host moves bridge_addr on before it
+    // collects the data, so a mux on the live address handed back the word 3 ahead and every .sav came out shifted by 12 bytes
+    reg  [1:0]  rd_src = 2'd0;                                  // 0 none, 1 command handler, 2 EEPROM shadow
+    always @(posedge clk_74a) if (bridge_rd)
+        rd_src <= (bridge_addr[31:24] == 8'hF8) ? 2'd1 : (bridge_addr[31:24] == 8'h09) ? 2'd2 : 2'd0;
     reg  [31:0] bridge_rd_mux;
     always @(*) begin
-        casex (bridge_addr)
-            32'hF8xxxxxx: bridge_rd_mux = cmd_bridge_rd_data;
-            32'h09xxxxxx: bridge_rd_mux = ee_shadow_q;          // EEPROM save-back (data slot 9)
-            default:      bridge_rd_mux = 32'h0;
+        case (rd_src)
+            2'd1:    bridge_rd_mux = cmd_bridge_rd_data;
+            2'd2:    bridge_rd_mux = ee_shadow_q;               // EEPROM save-back (data slot 9)
+            default: bridge_rd_mux = 32'h0;
         endcase
     end
     assign bridge_rd_data = bridge_rd_mux;
@@ -263,10 +268,18 @@ module core_top (
     reg  [31:0] datatable_data = 0;
     wire [31:0] datatable_q;
     reg         prev_dataslot_update = 0;
+    reg         prev_allcomplete = 0;
+    // The host reads a nonvolatile slot back to SD using the size in the data table. With no .sav yet (first launch) that size
+    // is 0 and nothing would ever be saved, so once loading is done set slot 9 (index 9 in data.json) to the 4 KB EEPROM image.
     always @(posedge clk_74a) begin
         prev_dataslot_update <= dataslot_update;
+        prev_allcomplete <= dataslot_allcomplete;
         datatable_wren <= 0;
-        if (dataslot_update && ~prev_dataslot_update) begin
+        if (dataslot_allcomplete && ~prev_allcomplete) begin
+            datatable_addr <= 10'd9 * 10'h2 + 10'h1;
+            datatable_data <= 32'h1000;
+            datatable_wren <= 1;
+        end else if (dataslot_update && ~prev_dataslot_update) begin
             datatable_addr <= dataslot_update_id[9:0] * 10'h2 + 10'h1;
             datatable_data <= dataslot_update_size;
             datatable_wren <= 1;
@@ -381,7 +394,7 @@ module core_top (
         end else ee_rd <= 1'b0;
     end
     always @(posedge clk1x) if (ee_wr_sh) ee_shadow[ee_wa_sh] <= ee_q;
-    always @(posedge clk_74a) ee_shadow_q <= ee_shadow[bridge_addr[11:2]];
+    always @(posedge clk_74a) if (bridge_rd) ee_shadow_q <= ee_shadow[bridge_addr[11:2]];   // held until the next read
 
     // ---- Core settings (interact.json): DIP1 Test, DIP2 Freeze, held Service button, CPU turbo ----
     reg [5:0] settings74 = 6'b000000;                    // [3] = diagnostic screen (off; diagnostic builds force it with S11_FORCE_DIAG)
