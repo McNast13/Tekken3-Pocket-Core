@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Count Tekken 3's per-frame GPU reset hitting unfinished drawing (after t3_overlapprobe.apply and t3_gp1cancel.apply).
+Every frame the game stops DMA channel 2 and sends GP1(01) at 1.537 ms after VSync (see t3_gp1cancel.apply). This counts
+how often that cuts off unfinished drawing, and how often the GPU had to cancel a half-received command afterwards.
+Rows (from t3_overlapprobe, changed):
+  1 [31:0]    = {TURBO x3, 13'b0, game frames [15:0]} (unchanged)
+  5 [255:224] = GP1(01) writes while DMA channel 2 was still busy (a display list cut off part way)
+  7 [223:192] = {16'b0, cancels done by t3_gp1cancel [15:0]} (each one was a freeze before this fix)
+  6 [191:160] = longest DMA2 busy stretch, clk1x (unchanged)
+  8 [159:128] = DMA2 busy stretches longer than one frame (unchanged)
+  9 [127:96]  = GP1(01) writes while GPUSTAT bit 26 was 0 (GPU still busy with a command)
+Usage: S11_PROBES=...,t3_overlapprobe,t3_gp1cancel,t3_cancelprobe,...; Tekken 3 only.
+"""
+import sys
+from pathlib import Path
+
+top = Path(sys.argv[1]) / "rtl/psx_top.vhd"
+t = top.read_text()
+
+
+def sub1(old, new):
+    global t
+    assert t.count(old) == 1, "not found once: " + old[:70]
+    t = t.replace(old, new)
+
+
+sub1("      variable busy_d : std_logic := '0';\n",
+     "      variable busy_d : std_logic := '0';\n"
+     "      variable cut_dma, cut_gpu : unsigned(31 downto 0) := (others => '0');\n")
+sub1("         busy_d := dma2_chcr2(24);\n",
+     """         busy_d := dma2_chcr2(24);
+         if bus_gpu_write = '1' and bus_gpu_addr = x"4" and bus_gpu_dataWrite(29 downto 24) = "000001" then
+            if dma2_chcr2(24) = '1' and cut_dma /= x"FFFFFFFF" then cut_dma := cut_dma + 1; end if;
+            if gpustat_sig(26) = '0' and cut_gpu /= x"FFFFFFFF" then cut_gpu := cut_gpu + 1; end if;
+         end if;
+""")
+sub1("std_logic_vector(busy_reads) &                                       -- row 5",
+     "std_logic_vector(cut_dma) &                                          -- row 5: GP1(01) with DMA2 busy")
+sub1("std_logic_vector(all_reads) &                                        -- row 7",
+     'x"0000" & std_logic_vector(t3_cancels) &                             -- row 7: cancels')
+sub1("std_logic_vector(last) &                                             -- row 9",
+     "std_logic_vector(cut_gpu) &                                          -- row 9: GP1(01) with GPU busy")
+top.write_text(t)
+print("t3_cancelprobe applied")

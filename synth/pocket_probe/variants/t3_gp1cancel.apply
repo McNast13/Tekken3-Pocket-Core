@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""GP1(01) cancels a half-received GPU command (Tekken 3 freeze fix candidate, 2026-11-19; not a release change until
+tested on the Pocket and agreed).
+MAME: every frame, 1.537 ms after VSync and before it starts the new lists, Tekken 3 runs libgpu's reset path at
+0x801EB03C: CHCR2 = 0x401 (stops DMA channel 2), GP1(02), GP1(01). On the real board the previous frame's drawing has
+always finished by then. The core's GPU is slower: the longest list the overlap probe measured, 16.58 ms, is exactly
+the time from the main list's start (+1.644 ms) to the next reset (+1.537 ms the next frame), so heavy frames are cut
+off there (fighters missing on the frozen screens).
+gpu.vhd's GP1(01) empties the command FIFO but only resets the VRAM transfer units (upstream PSX_MiSTer has the same
+"todo: must reset drawing units to idle?"). If the cut lands while gpu_poly/line/rect/fill/copy still needs parameter
+words, that unit waits for them forever and GPUSTAT bit 26 stays 0; the game's _addque2 waits for bit 26 before it
+sends anything (PC 0x801EAA78-88), so both wait: the freeze (freeze #5: gpu_poly in REQUESTPOS, FIFO empty; the
+2026-11-19 freeze: PC 0x801EAA80-84, no CPU fault).
+Hardware docs: GP1(01) resets the command buffer and cancels an incomplete command. This version: after a GP1(01)
+(gpuType1 = 0), if a drawing unit asks for FIFO words while the FIFO is empty and nothing has been written since the
+clear, the unit is returned to idle and the GPU reports ready. Drawing that already has all its words is not cut.
+Exports a 16-bit count of cancels (t3_cancels) for the probe.
+Usage: in S11_PROBES; Tekken 3 only.
+"""
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]) / "rtl"
+f = root / "gpu.vhd"
+t = f.read_text()
+
+
+def sub1(old, new):
+    global t
+    assert t.count(old) == 1, "not found once: " + old[:70]
+    t = t.replace(old, new)
+
+
+sub1("      gpustat_out          : out std_logic_vector(31 downto 0) := (others => '0');\n",
+     "      gpustat_out          : out std_logic_vector(31 downto 0) := (others => '0');\n"
+     "      t3_cancels           : out unsigned(15 downto 0) := (others => '0');   -- t3_gp1cancel.apply\n")
+sub1("   signal drawer_reset              : std_logic := '0';\n",
+     "   signal drawer_reset              : std_logic := '0';\n"
+     "   signal gp1_clear                 : std_logic := '0';   -- t3_gp1cancel.apply: GP1(01) seen (clk1x pulse)\n"
+     "   signal cancel_armed              : std_logic := '0';\n"
+     "   signal cmd_cancel                : std_logic := '0';\n"
+     "   signal cancel_count              : unsigned(15 downto 0) := (others => '0');\n")
+sub1("         drawer_reset  <= '0';\n",
+     "         drawer_reset  <= '0';\n         gp1_clear     <= '0';\n")
+sub1("""                        if (gpuType1 = '0') then
+                           fifoIn_reset <= '1';
+                           drawer_reset <= '1';
+                        end if;""",
+     """                        if (gpuType1 = '0') then
+                           fifoIn_reset <= '1';
+                           drawer_reset <= '1';
+                           gp1_clear    <= '1';   -- t3_gp1cancel.apply
+                        end if;""")
+sub1("""            if (proc_done = '1') then
+-- synthesis translate_off
+               export_gobj          <= export_gobj + 1;
+-- synthesis translate_on
+               proc_idle            <= '1';
+               GPUSTAT_ReadyRecCmd  <= '1';
+            end if;
+""", """            if (proc_done = '1') then
+-- synthesis translate_off
+               export_gobj          <= export_gobj + 1;
+-- synthesis translate_on
+               proc_idle            <= '1';
+               GPUSTAT_ReadyRecCmd  <= '1';
+            end if;
+
+            -- t3_gp1cancel.apply: a unit still asking for parameter words after GP1(01) emptied the FIFO, with
+            -- nothing written since, gets no more words: cancel the command (back to idle, GPU ready)
+            cmd_cancel <= '0';
+            if (gp1_clear = '1') then
+               cancel_armed <= '1';
+            elsif (fifoIn_Wr = '1') then
+               cancel_armed <= '0';
+            end if;
+            if (cancel_armed = '1' and gp1_clear = '0' and fifoIn_Wr = '0' and cmd_cancel = '0' and
+                proc_requestFifo = '1' and fifoIn_Empty = '1' and fifoIn_Valid = '0') then
+               cmd_cancel          <= '1';
+               cancel_armed        <= '0';
+               proc_idle           <= '1';
+               GPUSTAT_ReadyRecCmd <= '1';
+               if (cancel_count /= x"FFFF") then cancel_count <= cancel_count + 1; end if;
+            end if;
+""")
+sub1("   gpustat_out             <= GPUSTAT;", "   t3_cancels              <= cancel_count;\n   gpustat_out             <= GPUSTAT;")
+
+# the drawing units that take parameter words from the FIFO also reset on a cancel
+for unit in ("gpu_fillVram", "gpu_vram2vram", "gpu_line", "gpu_rect", "gpu_poly"):
+    m = re.search(r"   igpu_%s : entity work\.%s\n.*?(      reset                => softreset or SS_reset)" % (unit[4:], unit),
+                  t, flags=re.S)
+    assert m, "reset of " + unit + " not found"
+    t = t[:m.start(1)] + "      reset                => softreset or SS_reset or cmd_cancel" + t[m.end(1):]
+f.write_text(t)
+
+p = root / "psx_top.vhd"
+t = p.read_text()
+sub1("      gpustat_out          => gpustat_sig,", "      t3_cancels           => t3_cancels,\n      gpustat_out          => gpustat_sig,")
+sub1("   signal dma2_chcr2             : std_logic_vector(31 downto 0);\n",
+     "   signal dma2_chcr2             : std_logic_vector(31 downto 0);\n"
+     "   signal t3_cancels             : unsigned(15 downto 0);   -- t3_gp1cancel.apply\n")
+p.write_text(t)
+print("t3_gp1cancel applied")

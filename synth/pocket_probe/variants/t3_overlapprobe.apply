@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Does Tekken 3 rebuild a display list while the core is still drawing it? (needs s11_bootbits.apply; use instead of the
+other s11_boot_dbg probes such as t3_freezeprobe)
+MAME (2026-11-17): the game never calls DrawSync. Each frame, after VSync, it starts its lists with DrawOTag (libgpu
+_addque2: if DMA channel 2 is still busy the list is only queued) and 0.05 ms later starts rewriting the previous frame's
+list, whose DMA began one frame (16.7 ms) earlier. That is safe on the real board, whose GPU always finishes a frame's
+drawing within the frame. If the core's GPU takes longer, the CPU overwrites list nodes the DMA has not reached yet, which
+would explain freeze #5 (a 0x2F quad cut short, its node always 9 words in MAME) and the missing body parts of freeze #3.
+This counts, from power-on (all free-running, saturating):
+  1 [31:0]    = {TURBO_MEM, TURBO_COMP, TURBO_CACHE, 13'b0, game frames (vsync-loop exits) [15:0]}
+  5 [255:224] = CPU reads of DMA2 CHCR (0x1F8010A8) that found the channel still busy (bit 24): _addque2 queueing a list
+  7 [223:192] = all CPU reads of DMA2 CHCR
+  6 [191:160] = longest stretch DMA2 CHCR bit 24 stayed set, in clk1x clocks (33.8688 MHz; one frame = 564,480)
+  8 [159:128] = stretches longer than one frame (564,480 clk1x)
+  9 [127:96]  = length of the last stretch, clk1x
+In MAME every CHCR read finds the channel idle; on the Pocket row 5 > 0 or row 8 > 0 means drawing ran past the point
+where the game starts rewriting the list.
+Usage: S11_PROBES=...,t3_overlapprobe,... after pocket_emu.apply; Tekken 3 only.
+"""
+import re, sys
+from pathlib import Path
+
+top = Path(sys.argv[1]) / "rtl/psx_top.vhd"
+t = top.read_text()
+m = re.search(r"   s11_boot_dbg <= \(.*?;\n(?=   dbg_reached_game <= s11_reached_game;)", t, flags=re.S)
+assert m, "s11_boot_dbg assignment not found (s11_bootbits.apply must be applied)"
+pc = 'unsigned(zn_dbg_mipspc)'
+t = t[:m.start()] + f"""   -- t3_overlapprobe.apply: is a display list still being drawn when the game queues the next one?
+   t3_overlapprobe : process(clk1x)
+      variable busy_reads, all_reads, longest, long_n, last, cur : unsigned(31 downto 0) := (others => '0');
+      variable busy_d : std_logic := '0';
+      variable at_exit, at_exit_d : boolean := false;
+      variable gf : unsigned(15 downto 0) := (others => '0');
+   begin
+      if rising_edge(clk1x) then
+         at_exit := {pc} = x"801BBC78";
+         if at_exit and not at_exit_d then gf := gf + 1; end if;
+         at_exit_d := at_exit;
+         if bus_dma_read = '1' and bus_dma_addr = "0101000" then
+            if all_reads /= x"FFFFFFFF" then all_reads := all_reads + 1; end if;
+            if dma2_chcr2(24) = '1' and busy_reads /= x"FFFFFFFF" then busy_reads := busy_reads + 1; end if;
+         end if;
+         if dma2_chcr2(24) = '1' then
+            if cur /= x"FFFFFFFF" then cur := cur + 1; end if;
+         elsif busy_d = '1' then
+            last := cur;
+            if cur > longest then longest := cur; end if;
+            if cur > to_unsigned(564480, 32) and long_n /= x"FFFFFFFF" then long_n := long_n + 1; end if;
+            cur := (others => '0');
+         end if;
+         busy_d := dma2_chcr2(24);
+         s11_boot_dbg <= x"00000000" &
+                         std_logic_vector(busy_reads) &                                       -- row 5
+                         std_logic_vector(all_reads) &                                        -- row 7
+                         std_logic_vector(longest) &                                          -- row 6
+                         std_logic_vector(long_n) &                                           -- row 8
+                         std_logic_vector(last) &                                             -- row 9
+                         x"0000000000000000" &
+                         TURBO_MEM & TURBO_COMP & TURBO_CACHE & "0000000000000" & std_logic_vector(gf);   -- row 1
+      end if;
+   end process;
+""" + t[m.end():]
+top.write_text(t)
+print("t3_overlapprobe applied")

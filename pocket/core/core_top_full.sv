@@ -397,7 +397,7 @@ module core_top (
     always @(posedge clk_74a) if (bridge_rd) ee_shadow_q <= ee_shadow[bridge_addr[11:2]];   // held until the next read
 
     // ---- Core settings (interact.json): DIP1 Test, DIP2 Freeze, held Service button, CPU turbo ----
-    reg [5:0] settings74 = 6'b000000;                    // [3] = diagnostic screen (off; diagnostic builds force it with S11_FORCE_DIAG)
+    reg [5:0] settings74 = 6'b100000;                    // [3] = diagnostic screen (off; diagnostic builds force it with S11_FORCE_DIAG); [5:4] = CPU turbo 2 (mem + compute + cache), interact.json's default
     // With bridge_endian_little = 1 the host's setting values arrive byte-swapped (1 -> 32'h01000000), so take the value
     // from every byte lane, as the PlayStation core does (values are below 256)
     wire [7:0] set_val = bridge_wr_data[7:0] | bridge_wr_data[15:8] | bridge_wr_data[23:16] | bridge_wr_data[31:24];
@@ -406,7 +406,7 @@ module core_top (
         if (bridge_addr == 32'h50000004) settings74[1] <= set_val[0];
         if (bridge_addr == 32'h50000008) settings74[2] <= set_val[0];
         if (bridge_addr == 32'h5000000C) settings74[3] <= set_val[0];
-        if (bridge_addr == 32'h50000010) settings74[5:4] <= set_val[1:0];   // CPU turbo -> status[80:79] (0 off, 1 mem, 3 mem + compute)
+        if (bridge_addr == 32'h50000010) settings74[5:4] <= set_val[1:0];   // CPU turbo -> status[80:79] (0 off, 1 mem, 3 mem + compute, 2 + data cache)
     end
     wire [5:0] settings;
     synch_3 #(.WIDTH(6)) s_set (settings74, settings, clk1x);
@@ -565,7 +565,7 @@ module core_top (
     wire apf_hs, apf_vs, apf_de, apf_skip;
     wire [23:0] apf_rgb;
     psx_apf_video #(.STEADY_INTERLACE(0), .SLOT_SELECT(1), .PAD_LINES(1), .CENTER_LINES(1), .VS_ON_HS(1),
-                    .CROP_LINES(1), .BLANK_TOP(1), .LEAD_LINE(1), .MID_W(384)) apf_video (
+                    .CROP_LINES(1), .BLANK_TOP(1), .LEAD_LINE(0), .MID_W(384), .EVEN_LINES(1)) apf_video (
         .clk(clk_vid), .ce(diag_sel ? dg_ce : vid_ce),
         .hsync(diag_sel ? dg_hs : vid_hs), .vsync(diag_sel ? dg_vs : vid_vs),
         .hblank(diag_sel ? dg_hbl : vid_hbl), .vblank(diag_sel ? dg_vbl : vid_vbl), .interlace(diag_sel ? 1'b0 : vid_ilace),
