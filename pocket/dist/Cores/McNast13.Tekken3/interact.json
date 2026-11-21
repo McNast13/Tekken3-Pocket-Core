@@ -58,7 +58,7 @@
         "persist": true,
         "writeonly": true,
         "address": "0x50000010",
-        "defaultval": 0,
+        "defaultval": 2,
         "options": [
           {
             "value": 0,

@@ -28,12 +28,17 @@ concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 env:
-  # Release recipe = the game build tested on the device (game22, docs/SHELL.md 2026-10-24): every default variant (real MDEC,
-  # full-rate PSRAM VRAM, the PS 0.5.6 GPU/GTE/DMA patches, the GPU timing variants), without the bring-up probe export
-  # (s11_bootbits; PK_DBG2 tied off by s11_dbg2_zero), outputs on the rising edge. Seed 22 is the seed tested on the device (v0.1.1).
+  # Release recipe = the Tekken 3 game build (docs/CORE_T3.md): every default variant plus the System 12 changes (t3_gpu_cuts,
+  # t3_io_cuts, t3_s12map, the real H8 t3_h8, the GPU freeze fix t3_gp1cancel, the data-cache turbo setting t3_turbo_cache), without the bring-up probe export
+  # (s11_bootbits; PK_DBG2 tied off by s11_dbg2_zero) and without the diagnostic screen (S11_NO_DIAG), outputs on the rising
+  # edge. NUM_PARALLEL_PROCESSORS = 2 as tools/local_build.sh: the fitter's result depends on it, so a release reproduces the
+  # bitstream tested on the Pocket byte for byte only with the same value.
   S11_SKIP: s11_bootbits
-  S11_PROBES: s11_dbg2_zero
-  QSF_MACROS: 'set_global_assignment -name VERILOG_MACRO "S11_POSEDGE_OUT=1"'
+  S11_PROBES: t3_gpu_cuts,t3_io_cuts,t3_s12map,t3_h8,t3_gp1cancel,t3_turbo_cache,s11_dbg2_zero
+  QSF_MACROS: |-
+    set_global_assignment -name VERILOG_MACRO "S11_POSEDGE_OUT=1"
+    set_global_assignment -name VERILOG_MACRO "S11_NO_DIAG=1"
+    set_global_assignment -name NUM_PARALLEL_PROCESSORS 2
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -62,7 +67,7 @@ jobs:
         run: |
           mkdir -p cand
           if ls pocket/project/output_files/s11full.rbf >/dev/null 2>&1; then
-            python3 tools/package_pocket.py --rbf pocket/project/output_files/s11full.rbf --out cand/package
+            python3 tools/package_pocket.py --rbf pocket/project/output_files/s11full.rbf --out cand/package --release
             # worst slack over every model/clock/check in the STA summary (more negative = worse)
             worst=$(grep -E '^Slack' pocket/project/output_files/s11full.sta.summary | awk '{print $3}' | sort -g | head -1)
             echo "${worst:-0}" > cand/slack
@@ -123,21 +128,15 @@ jobs:
           echo "zip=$zip_name" >> "$GITHUB_OUTPUT"
       - name: Release notes
         shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           d=${{ steps.pick.outputs.dir }}
           {
-            echo "Beta of the Tekken 3 arcade core (Namco System 12) for the Analogue Pocket, built on the Namco System 11 port and the openFPGA PlayStation core."
-            echo
-            echo "**Install:** unzip onto the root of the SD card. The core appears under openFPGA > Arcade > Tekken 3."
-            echo "ROMs and the C76 BIOS are not included: build the game files from your own current-MAME romsets with"
-            echo "tools/make_games.py, and put c76.bin (from namcoc76.zip) in Assets/tekken3/common/ (see the README)."
-            echo "pupdate and Pocket Sync list each game's required files."
-            echo
-            echo "**Tested on a Pocket:** Tekken, Tekken 2, Soul Edge, Xevious 3D/G, Dancing Eyes, Star Sweep, Pocket Racer, Prime Goal EX"
-            echo "and Kosodate Quiz My Angel 3. Not tested yet: Point Blank 2 / Gunbarl and Dunk Mania."
-            echo
-            echo "**Known limitations:** to change game, quit the core and open it again (no Load game); game settings (EEPROM) are"
-            echo "not kept between launches yet; not every regional version in _alternatives has been tried."
+            # the release's own notes (docs/release-notes/<tag>.md, reviewed before tagging), then the build facts
+            notes="docs/release-notes/${TAG}.md"
+            [ -f "$notes" ] || { echo "::error::$notes missing: write the release notes first"; exit 1; }
+            cat "$notes"
             echo
             echo "Build: fitter seed ${{ steps.pick.outputs.seed }}, worst-case timing slack ${{ steps.pick.outputs.slack }} ns."
             echo

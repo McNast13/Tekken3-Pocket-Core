@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Assemble an Analogue Pocket SD-card tree for the System 11 core.
 
-  package_pocket.py --rbf output_files/s11full.rbf --out OUTDIR [--packed DIR --instance NAME]
+  package_pocket.py --rbf output_files/s11full.rbf --out OUTDIR [--release] [--packed DIR --instance NAME]
+--release: for a build without the diagnostic screen (S11_NO_DIAG): its "Diagnostic screen" setting is left out of interact.json.
 
 Writes OUTDIR/Cores/McNast13.Tekken3/{core.json,data.json,video.json,audio.json,input.json,interact.json,bitstream.rbf_r},
 OUTDIR/Platforms/tekken3.json and, with --packed (rom_packer.py output made with --instance NAME), the game into
@@ -17,17 +18,15 @@ CORE_DIR = ROOT / "pocket/dist/Cores/McNast13.Tekken3"
 REV = bytes(int(f"{i:08b}"[::-1], 2) for i in range(256))
 
 
-ASSETS_README = """Tekken 3 game files go in this folder. None are included: they are built from your own current-MAME romsets.
+ASSETS_README = """Tekken 3 game files go in this folder. None are included: they are built from your own current-MAME romset.
 
-- c76.bin: the C76 sound CPU BIOS, shared by every game. Copy it out of namcoc76.zip into this folder
-  (CRC 399faac7, md5 8ca155e5ad03571e0930d8d361749b03).
-- One folder per game, named after its MAME set (tekken2/, souledge/, xevi3dg/, ...), holding rom_0.bin ... rom_7.bin.
-  Build them with tools/make_games.py from https://github.com/McNast13/Tekken3-Pocket-Core:
+- tekken3/: rom_0.bin, rom_1.bin, rom_3.bin, rom_3b.bin, rom_6.bin and rom_7.bin, built from MAME's tekken3.zip with
+  tools/make_t3_roms.py from https://github.com/McNast13/Tekken3-Pocket-Core (every part's CRC is checked):
 
-      python3 tools/make_games.py --roms <folder with your zips and namcoc76.zip> --sd <SD card root>
+      python3 tools/make_t3_roms.py --roms <folder with tekken3.zip> --sd <SD card root>
 
-The game list is in ../McNast13.Tekken3/ (main versions; other versions in _alternatives/). pupdate and Pocket Sync
-show which files each game still needs. To change game, quit the core and open it again.
+The game entry is ../McNast13.Tekken3/Tekken 3 (World, TET2-VER.E1).json; pupdate and Pocket Sync show which files it
+still needs.
 """
 
 
@@ -35,6 +34,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rbf", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--release", action="store_true", help="build without the diagnostic screen (S11_NO_DIAG)")
     ap.add_argument("--packed", type=Path, help="rom_packer.py output directory")
     ap.add_argument("--instance", help="instance name used with rom_packer.py --instance")
     a = ap.parse_args()
@@ -45,6 +45,10 @@ def main():
     plat.mkdir(parents=True, exist_ok=True)
     for f in CORE_DIR.glob("*.json"):
         shutil.copy(f, core / f.name)
+    if a.release:   # no diagnostic screen in the bitstream: drop its setting from the menu
+        ij = json.loads((core / "interact.json").read_text())
+        ij["interact"]["variables"] = [v for v in ij["interact"]["variables"] if v["name"] != "Diagnostic screen"]
+        (core / "interact.json").write_text(json.dumps(ij, indent=2) + "\n")
     (core / "bitstream.rbf_r").write_bytes(a.rbf.read_bytes().translate(REV))
     # placeholder artwork: icon 36x36 and platform picture 521x165, RGB565 little-endian, solid colour
     def solid(w, h, rgb565):
@@ -59,16 +63,12 @@ def main():
     (plat / "tekken3.json").write_text(json.dumps(
         {"platform": {"category": "Arcade", "name": "Tekken 3", "manufacturer": "Namco", "year": 1997}}, indent=2) + "\n")
 
-    # the game list: one instance JSON per System 11 set with an MRA (tools/make_games.py); pupdate / Pocket Sync read the files each
-    # names as the game's required files. The ROM images themselves are the user's own (make_games.py --roms ... --sd ...).
-    import make_games
-    if make_games.ARCADE.is_dir():
-        games = make_games.sets()
-        for s in games:
-            make_games.write_instance(a.out / "Assets" / make_games.PLATFORM / make_games.CORE / make_games.instance_name(s), s)
-        print(f"{len(games)} game instances")
-    else:
-        print("warning: references/SYSTEM11_MiSTer not checked out: no game instances in the package")
+    # the game entry: Tekken 3's instance JSON as tools/make_t3_roms.py writes it (pupdate / Pocket Sync read the files it names as
+    # the game's required files; the md5s are those of the images make_t3_roms.py builds from MAME's tekken3.zip)
+    games = a.out / "Assets/tekken3/McNast13.Tekken3"
+    games.mkdir(parents=True, exist_ok=True)
+    for f in (ROOT / "pocket/dist/Assets/tekken3/McNast13.Tekken3").glob("*.json"):
+        shutil.copy(f, games / f.name)
 
     # where the user's files go, as in the Dragon 32 core's release (a README beside the files it asks for), and the licence
     common = a.out / "Assets" / "tekken3" / "common"

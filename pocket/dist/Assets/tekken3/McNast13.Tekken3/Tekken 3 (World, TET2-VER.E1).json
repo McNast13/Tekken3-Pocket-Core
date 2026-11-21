@@ -1,0 +1,38 @@
+{
+  "instance": {
+    "magic": "APF_VER_1",
+    "data_path": "",
+    "data_slots": [
+      {
+        "id": 1,
+        "filename": "tekken3/rom_0.bin",
+        "md5": "fbe87aaa55d99ab2f72c5214b4c1a96f"
+      },
+      {
+        "id": 2,
+        "filename": "tekken3/rom_1.bin",
+        "md5": "215fa2e6bb04a359d519a0ae11cd922e"
+      },
+      {
+        "id": 4,
+        "filename": "tekken3/rom_3.bin",
+        "md5": "962fcb6622aa7e86003c722c8d613874"
+      },
+      {
+        "id": 5,
+        "filename": "tekken3/rom_3b.bin",
+        "md5": "c9baa74c3bda54f69311c02c82ea40db"
+      },
+      {
+        "id": 6,
+        "filename": "tekken3/rom_6.bin",
+        "md5": "47fdcdc321a428680a249528c3f0fd15"
+      },
+      {
+        "id": 7,
+        "filename": "tekken3/rom_7.bin",
+        "md5": "d7c7580dbb9a4fe3dce4e5861b7e1975"
+      }
+    ]
+  }
+}
